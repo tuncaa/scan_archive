@@ -11,22 +11,43 @@
 <main>
   <div class="page-heading"><div><p class="eyebrow">ARCHIVE</p><h1>ドキュメント検索</h1></div><p class="result-count">{{ documents|length }}件{% if untagged %}（タグ未設定）{% endif %}</p></div>
   <form class="search" method="get" action="{{ url_for('webui') }}">
-    <label>ファイル名<input name="filename" value="{{ filters.filename }}"></label>
-    <label>OCR本文<input name="text" value="{{ filters.text }}"></label>
+    <label for="text-search">テキスト検索（ファイル名・OCR本文・メモ）
+      <input id="text-search" name="text" value="{{ filters.text }}" placeholder="ファイル名・OCR本文・メモ">
+    </label>
     <label>タグ（複数は空白区切り）<input name="tag" value="{{ filters.tag }}"></label>
     <label>日時（開始）<input type="date" name="from_date" value="{{ filters.from_date }}"></label>
     <label>日時（終了）<input type="date" name="to_date" value="{{ filters.to_date }}"></label>
     <div class="actions">
       <button type="submit">検索</button>
       <a class="button secondary" href="{{ url_for('webui', untagged='1') }}">未タグを一覧</a>
+      <a class="button secondary" href="{{ url_for('tag_list') }}">タグ一覧</a>
+      <a class="button secondary" href="{{ url_for('timeline') }}">時系列</a>
     </div>
   </form>
   {% if documents %}
   <form id="bulk-form" method="post" action="{{ url_for('bulk_update_documents') }}">
     <div class="bulk-bar">
       <strong>一括編集</strong>
+      <div class="bulk-tag-buttons" aria-label="タグ一覧から選択したタグ">
+        <span>タグ一覧から選択:</span>
+        {% if selected_tags %}
+          {% for tag in selected_tags %}
+          <button class="tag-button" type="button" data-tag="{{ tag }}">{{ tag }}</button>
+          {% endfor %}
+        {% else %}
+          <span class="no-selected-tags">未選択</span>
+        {% endif %}
+      </div>
       <label>一括メモ（空欄は変更しない）<input name="note"></label>
-      <label>一括タグ（空欄は変更しない）<input name="tags" placeholder="カンマ・空白区切り"></label>
+      <label>一括タグ（空欄は変更しない）
+        <div class="tag-picker" data-priority-tags='{{ priority_tags | tojson }}' data-value="{{ bulk_tag }}">
+          <div class="tag-chips"></div>
+          <input class="tag-input" type="text" autocomplete="off" placeholder="タグを入力して選択">
+          <div class="tag-suggestions"></div>
+          <input class="tag-value" type="hidden" name="tags">
+        </div>
+      </label>
+      <label class="select-document"><input type="checkbox" name="append_tags" value="1" checked> 既存タグに追加</label>
       <button type="submit">選択項目に適用</button>
     </div>
   </form>
@@ -43,7 +64,14 @@
       <p class="tags">タグ: {{ document.tag_names or 'なし' }}</p>
       <form method="post" action="{{ url_for('update_document', sha256=document.sha256) }}">
         <label>メモ<textarea name="note">{{ document.note or '' }}</textarea></label>
-        <label>タグ（複数はカンマ・改行・空白区切り）<input name="tags" value="{{ document.tag_names or '' }}"></label>
+        <label>タグ（複数はカンマ・改行・空白区切り）
+          <div class="tag-picker" data-priority-tags='{{ priority_tags | tojson }}' data-value="{{ document.tag_names or '' }}">
+            <div class="tag-chips"></div>
+            <input class="tag-input" type="text" autocomplete="off" placeholder="タグを入力して選択">
+            <div class="tag-suggestions"></div>
+            <input class="tag-value" type="hidden" name="tags">
+          </div>
+        </label>
         <div class="actions"><button type="submit">保存</button>
           <a href="{{ url_for('document_file', sha256=document.sha256, kind='txt') }}">OCR本文</a></div>
       </form>
@@ -87,6 +115,83 @@
     if (event.key === "Escape") {
       closeModal();
     }
+  });
+
+  document.querySelectorAll(".tag-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const picker = document.querySelector("#bulk-form .tag-picker");
+      if (picker) {
+        picker.addTag(button.dataset.tag);
+      }
+    });
+  });
+
+  document.querySelectorAll(".tag-picker").forEach((picker) => {
+    const input = picker.querySelector(".tag-input");
+    const hidden = picker.querySelector(".tag-value");
+    const chips = picker.querySelector(".tag-chips");
+    const suggestions = picker.querySelector(".tag-suggestions");
+    const priorityTags = JSON.parse(picker.dataset.priorityTags || "[]");
+    let tags = (picker.dataset.value || "")
+      .split(/[,\s]+/)
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+
+    function sync() {
+      hidden.value = tags.join(",");
+      chips.replaceChildren();
+      tags.forEach((tag) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "tag-chip";
+        chip.textContent = tag + " ×";
+        chip.addEventListener("click", () => {
+          tags = tags.filter((current) => current !== tag);
+          sync();
+        });
+        chips.appendChild(chip);
+      });
+    }
+
+    function showSuggestions() {
+      const query = input.value.trim().toLocaleLowerCase();
+      suggestions.replaceChildren();
+      priorityTags
+        .filter((tag) => !tags.includes(tag))
+        .filter((tag) => !query || tag.toLocaleLowerCase().includes(query))
+        .forEach((tag) => {
+          const option = document.createElement("button");
+          option.type = "button";
+          option.className = "tag-suggestion";
+          option.textContent = tag;
+          option.addEventListener("click", () => {
+            tags.push(tag);
+            input.value = "";
+            sync();
+            showSuggestions();
+          });
+          suggestions.appendChild(option);
+        });
+    }
+
+    picker.addTag = (tag) => {
+      if (!tags.includes(tag)) {
+        tags.push(tag);
+        sync();
+      }
+    };
+    input.addEventListener("focus", showSuggestions);
+    input.addEventListener("input", showSuggestions);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && input.value.trim()) {
+        event.preventDefault();
+        picker.addTag(input.value.trim());
+        input.value = "";
+        showSuggestions();
+      }
+    });
+    picker.closest("form").addEventListener("submit", sync);
+    sync();
   });
 </script>
 </body>

@@ -1,0 +1,3 @@
+https://github.com/tesseract-ocr/tessdata_fast/blob/main/jpn_vert.traineddata
+https://github.com/tesseract-ocr/tessdata_fast/blob/main/jpn.traineddata
+https://github.com/tesseract-ocr/tessdata_fast/blob/main/eng.traineddata

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>タグ一覧 - Scan Archive</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>タグ一覧</span></div></header>
+<main>
+  <div class="page-heading">
+    <div><p class="eyebrow">TAGS</p><h1>タグ一覧</h1></div>
+    <a class="button secondary" href="{{ url_for('webui') }}">検索へ戻る</a>
+  </div>
+  {% if tags %}
+  <form id="tag-selection-form" method="get" action="{{ url_for('webui') }}"></form>
+  <section class="tag-list">
+    {% for tag in tags %}
+    <label class="tag-card">
+      <div><input type="checkbox" name="selected_tag" value="{{ tag.name }}" form="tag-selection-form"> <strong>{{ tag.name }}</strong><span>{{ tag.document_count }}件</span></div>
+      <div class="actions">
+        <a class="button secondary" href="{{ url_for('webui', tag=tag.name) }}">検索</a>
+        <button class="priority{% if tag.is_priority %} active{% endif %}" type="submit" form="priority-tag-{{ tag.id }}">
+          {% if tag.is_priority %}優先を解除{% else %}優先にする{% endif %}
+        </button>
+        <button class="danger" type="submit" form="hide-tag-{{ tag.id }}">一覧から削除</button>
+      </div>
+    </label>
+    <form id="hide-tag-{{ tag.id }}" method="post" action="{{ url_for('hide_tag', tag_id=tag.id) }}"></form>
+    <form id="priority-tag-{{ tag.id }}" method="post" action="{{ url_for('toggle_tag_priority', tag_id=tag.id) }}"></form>
+    {% endfor %}
+  </section>
+  <div class="actions">
+    <button type="submit" form="tag-selection-form">選択したタグを一括編集へ追加</button>
+  </div>
+  {% else %}
+  <p class="empty">使用されているタグはありません。</p>
+  {% endif %}
+</main>
+</body>
+</html>

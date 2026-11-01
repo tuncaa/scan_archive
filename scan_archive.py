@@ -1,7 +1,8 @@
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 import argparse
+import calendar
 import hashlib
 import logging
 import msvcrt
@@ -30,6 +31,7 @@ TESSDATA = Path(__file__).resolve().parent / "tessdata"
 LANGUAGE = "jpn+eng"
 DPI = 300
 THUMBNAIL_DPI = 150
+OCR_PAGES = 1  # 先頭からOCRするページ数。-1で全ページ
 
 STABLE_SECONDS = 10   # 一覧取得後、この秒数待ってサイズ・日時を再確認
 MIN_TEXT_CHARS = 10   # これ未満なら「要確認」として保存
@@ -128,7 +130,9 @@ def open_database():
 
         CREATE TABLE IF NOT EXISTS tags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE
+            name TEXT NOT NULL UNIQUE,
+            is_hidden INTEGER NOT NULL DEFAULT 0,
+            is_priority INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS document_tags (
@@ -151,6 +155,19 @@ def open_database():
     if "note" not in columns:
         connection.execute(
             "ALTER TABLE documents ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+        )
+
+    tag_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(tags)")
+    }
+    if "is_hidden" not in tag_columns:
+        connection.execute(
+            "ALTER TABLE tags ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0"
+        )
+    if "is_priority" not in tag_columns:
+        connection.execute(
+            "ALTER TABLE tags ADD COLUMN is_priority INTEGER NOT NULL DEFAULT 0"
         )
 
     connection.execute("PRAGMA foreign_keys = ON")
@@ -368,17 +385,29 @@ def process_ocr(connection):
                 if document.page_count == 0:
                     raise RuntimeError("ページがありません。")
 
-                page = document[0]
-                text_page = page.get_textpage_ocr(
-                    language=LANGUAGE,
-                    dpi=DPI,
-                    full=True,
-                    tessdata=str(TESSDATA),
+                page_count = (
+                    document.page_count
+                    if OCR_PAGES == -1
+                    else min(OCR_PAGES, document.page_count)
                 )
-                body = page.get_text(
-                    "text", textpage=text_page, sort=True
-                ).strip()
-                body = normalize_ocr_text(body)
+                page_bodies = []
+                for page_number in range(page_count):
+                    page = document[page_number]
+                    text_page = page.get_textpage_ocr(
+                        language=LANGUAGE,
+                        dpi=DPI,
+                        full=True,
+                        tessdata=str(TESSDATA),
+                    )
+                    page_body = page.get_text(
+                        "text", textpage=text_page, sort=True
+                    ).strip()
+                    page_bodies.append(normalize_ocr_text(page_body))
+                body = "\n\n".join(page_bodies)
+                target_description = (
+                    "全ページ" if OCR_PAGES == -1
+                    else f"先頭{page_count}ページ"
+                )
 
             count = sum(not char.isspace() for char in body)
             status = "done" if count >= MIN_TEXT_CHARS else "review"
@@ -394,10 +423,10 @@ def process_ocr(connection):
                 f"元ファイル: {row['original_path']}\n"
                 f"保存PDF: {row['pdf_path']}\n"
                 f"サムネイル: {thumbnail_path}\n"
-                f"対象: 1ページ目のみ\n"
+                f"対象: {target_description}\n"
                 f"OCR言語: {LANGUAGE}\n"
                 f"状態: {status}\n\n"
-                f"--- 1ページ目の本文 ---\n{body}\n"
+                f"--- OCR本文 ---\n{body}\n"
             )
 
             temporary = WORK / f"{row['sha256']}.txt.part"
@@ -476,24 +505,27 @@ def search_documents(connection, keyword):
 def create_webui():
     app = Flask(__name__)
 
-    def query_documents(filters, untagged):
+    def query_documents(filters, untagged, limit=None):
         connection = open_database()
         try:
             conditions = []
             parameters = []
-            if filters["filename"]:
-                conditions.append(
-                    "(pdf_path LIKE ? OR original_path LIKE ?)"
-                )
-                pattern = f"%{filters['filename']}%"
-                parameters.extend((pattern, pattern))
             if filters["text"]:
                 conditions.append("""
-                    replace(replace(body, ' ', ''), '　', '') LIKE ?
+                    (
+                        pdf_path LIKE ?
+                        OR original_path LIKE ?
+                        OR replace(replace(body, ' ', ''), '　', '') LIKE ?
+                        OR note LIKE ?
+                    )
                 """)
-                parameters.append(
-                    f"%{normalize_ocr_text(filters['text'])}%"
-                )
+                pattern = f"%{filters['text']}%"
+                parameters.extend((
+                    pattern,
+                    pattern,
+                    f"%{normalize_ocr_text(filters['text'])}%",
+                    pattern,
+                ))
             if filters["from_date"]:
                 conditions.append("date(original_modified) >= date(?)")
                 parameters.append(filters["from_date"])
@@ -524,6 +556,7 @@ def create_webui():
                 parameters.append(f"%{term}%")
 
             where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            limit_clause = f"LIMIT {int(limit)}" if limit else ""
             return connection.execute(f"""
                 SELECT d.*,
                        GROUP_CONCAT(t.name, ', ') AS tag_names,
@@ -535,6 +568,7 @@ def create_webui():
                 {where}
                 GROUP BY d.sha256
                 ORDER BY d.original_modified DESC
+                {limit_clause}
             """, parameters).fetchall()
         finally:
             connection.close()
@@ -543,10 +577,34 @@ def create_webui():
     def webui():
         filters = {
             key: request.args.get(key, "").strip()
-            for key in ("filename", "text", "tag", "from_date", "to_date")
+            for key in ("text", "tag", "from_date", "to_date")
         }
         untagged = request.args.get("untagged") == "1"
-        documents = query_documents(filters, untagged)
+        selected_tags = [
+            tag.strip()
+            for tag in request.args.getlist("selected_tag")
+            if tag.strip()
+        ]
+        bulk_tag = request.args.get("bulk_tag", "").strip()
+        if bulk_tag:
+            selected_tags.extend(
+                tag.strip() for tag in bulk_tag.replace(",", " ").split()
+                if tag.strip()
+            )
+        selected_tags = list(dict.fromkeys(selected_tags))
+        connection = open_database()
+        try:
+            priority_tags = [
+                row["name"] for row in connection.execute("""
+                    SELECT name FROM tags
+                    WHERE is_hidden = 0 AND is_priority = 1
+                    ORDER BY name COLLATE NOCASE
+                """)
+            ]
+        finally:
+            connection.close()
+        limit = 50 if not any(filters.values()) and not untagged else None
+        documents = query_documents(filters, untagged, limit=limit)
         documents = [
             {
                 **{column: document[column] for column in document.keys()},
@@ -562,6 +620,129 @@ def create_webui():
             documents=documents,
             filters=filters,
             untagged=untagged,
+            bulk_tag=",".join(selected_tags),
+            selected_tags=selected_tags,
+            priority_tags=priority_tags,
+        )
+
+    @app.get("/timeline")
+    def timeline():
+        today = datetime.now().date()
+        month_value = request.args.get("month", "")
+        try:
+            month_date = datetime.strptime(month_value, "%Y-%m").date()
+        except ValueError:
+            month_date = today.replace(day=1)
+
+        month_start = month_date.replace(day=1)
+        month_end = month_start.replace(
+            day=calendar.monthrange(month_start.year, month_start.month)[1]
+        )
+        calendar_weeks = calendar.Calendar(
+            firstweekday=0
+        ).monthdatescalendar(month_start.year, month_start.month)
+        calendar_start = calendar_weeks[0][0]
+        calendar_end = calendar_weeks[-1][-1]
+        connection = open_database()
+        try:
+            counts = {
+                row["day"]: row["count"]
+                for row in connection.execute("""
+                    SELECT date(original_modified) AS day, COUNT(*) AS count
+                    FROM documents
+                    WHERE date(original_modified) BETWEEN date(?) AND date(?)
+                    GROUP BY date(original_modified)
+                """, (calendar_start.isoformat(), calendar_end.isoformat()))
+            }
+        finally:
+            connection.close()
+
+        selected_date = request.args.get("date", "")
+        period = request.args.get("period", "month")
+        if period not in {"month", "week", "day"}:
+            abort(400, description="期間の指定が不正です。")
+        documents = []
+        if selected_date:
+            try:
+                selected_day = datetime.strptime(
+                    selected_date, "%Y-%m-%d"
+                ).date()
+            except ValueError:
+                abort(400, description="日付の形式が不正です。")
+            if period == "week":
+                range_start = selected_day - timedelta(
+                    days=selected_day.weekday()
+                )
+                range_end = range_start + timedelta(days=6)
+            elif period == "month":
+                range_start = selected_day.replace(day=1)
+                range_end = range_start.replace(
+                    day=calendar.monthrange(
+                        range_start.year, range_start.month
+                    )[1]
+                )
+            else:
+                range_start = range_end = selected_day
+            documents = query_documents({
+                "text": "",
+                "tag": "",
+                "from_date": range_start.isoformat(),
+                "to_date": range_end.isoformat(),
+            }, False)
+            documents = [
+                {
+                    **{column: document[column] for column in document.keys()},
+                    "filename": Path(document["filename_path"]).name,
+                    "display_filename": "_".join(
+                        Path(document["filename_path"]).stem.split("_")[:2]
+                    ),
+                }
+                for document in documents
+            ]
+
+        previous_month = (month_start.replace(day=1) - timedelta(days=1))
+        next_month = (
+            month_end.replace(day=1) + timedelta(days=32)
+        ).replace(day=1)
+        return render_template(
+            "timeline.html",
+            month=month_start,
+            weeks=calendar_weeks,
+            counts=counts,
+            selected_date=selected_date,
+            period=period,
+            documents=documents,
+            previous_month=previous_month.strftime("%Y-%m"),
+            next_month=next_month.strftime("%Y-%m"),
+        )
+
+    @app.get("/documents/<sha256>/edit")
+    def edit_document(sha256):
+        connection = open_database()
+        try:
+            document = connection.execute("""
+                SELECT d.*, GROUP_CONCAT(t.name, ', ') AS tag_names
+                FROM documents d
+                LEFT JOIN document_tags dt ON dt.sha256 = d.sha256
+                LEFT JOIN tags t ON t.id = dt.tag_id
+                WHERE d.sha256 = ?
+                GROUP BY d.sha256
+            """, (sha256,)).fetchone()
+            priority_tags = [
+                row["name"] for row in connection.execute("""
+                    SELECT name FROM tags
+                    WHERE is_hidden = 0 AND is_priority = 1
+                    ORDER BY name COLLATE NOCASE
+                """)
+            ]
+        finally:
+            connection.close()
+        if document is None:
+            abort(404)
+        return render_template(
+            "edit_document.html",
+            document=document,
+            priority_tags=priority_tags,
         )
 
     @app.post("/documents/<sha256>/update")
@@ -609,6 +790,7 @@ def create_webui():
 
         note = request.form.get("note", "").strip()
         raw_tags = request.form.get("tags", "").strip()
+        append_tags = request.form.get("append_tags") == "1"
         tag_names = {
             tag.strip() for tag in raw_tags.replace(",", " ").split()
             if tag.strip()
@@ -648,18 +830,68 @@ def create_webui():
                     for name in tag_names
                 }
                 for sha256 in sha256s:
-                    connection.execute(
-                        "DELETE FROM document_tags WHERE sha256 = ?",
-                        (sha256,),
-                    )
+                    if not append_tags:
+                        connection.execute(
+                            "DELETE FROM document_tags WHERE sha256 = ?",
+                            (sha256,),
+                        )
                     connection.executemany(
-                        "INSERT INTO document_tags (sha256, tag_id) VALUES (?, ?)",
+                        "INSERT OR IGNORE INTO document_tags "
+                        "(sha256, tag_id) VALUES (?, ?)",
                         [(sha256, tag_ids[name]) for name in sorted(tag_names)],
                     )
             connection.commit()
         finally:
             connection.close()
         return redirect(url_for("webui"))
+
+    @app.get("/tags")
+    def tag_list():
+        connection = open_database()
+        try:
+            tags = connection.execute("""
+                SELECT t.id, t.name, t.is_priority,
+                       COUNT(dt.sha256) AS document_count
+                FROM tags t
+                LEFT JOIN document_tags dt ON dt.tag_id = t.id
+                WHERE t.is_hidden = 0
+                GROUP BY t.id, t.name
+                ORDER BY t.name COLLATE NOCASE
+            """).fetchall()
+        finally:
+            connection.close()
+        return render_template("tags.html", tags=tags)
+
+    @app.post("/tags/<int:tag_id>/hide")
+    def hide_tag(tag_id):
+        connection = open_database()
+        try:
+            cursor = connection.execute(
+                "UPDATE tags SET is_hidden = 1 WHERE id = ?",
+                (tag_id,),
+            )
+            if cursor.rowcount == 0:
+                abort(404)
+            connection.commit()
+        finally:
+            connection.close()
+        return redirect(url_for("tag_list"))
+
+    @app.post("/tags/<int:tag_id>/priority")
+    def toggle_tag_priority(tag_id):
+        connection = open_database()
+        try:
+            cursor = connection.execute("""
+                UPDATE tags
+                SET is_priority = CASE is_priority WHEN 1 THEN 0 ELSE 1 END
+                WHERE id = ? AND is_hidden = 0
+            """, (tag_id,))
+            if cursor.rowcount == 0:
+                abort(404)
+            connection.commit()
+        finally:
+            connection.close()
+        return redirect(url_for("tag_list"))
 
     @app.get("/documents/<sha256>/<kind>")
     def document_file(sha256, kind):
@@ -731,6 +963,10 @@ def main():
                     raise FileNotFoundError(
                         f"OCR言語データがありません: {data}"
                     )
+            if OCR_PAGES == 0 or OCR_PAGES < -1:
+                raise ValueError(
+                    "OCR_PAGESは1以上の値、または全ページを示す-1を指定してください。"
+                )
 
             if SOURCE.resolve() == DEST.resolve():
                 raise ValueError("コピー元と保存先は分けてください。")

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>時系列 - Scan Archive</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>時系列</span></div></header>
+<main>
+  <div class="page-heading">
+    <div><p class="eyebrow">TIMELINE</p><h1>{{ month.year }}年{{ month.month }}月</h1></div>
+    <a class="button secondary" href="{{ url_for('webui') }}">検索へ戻る</a>
+  </div>
+  <div class="calendar-nav">
+    <a class="button secondary" href="{{ url_for('timeline', month=previous_month) }}">前月</a>
+    <label class="period-picker">表示単位
+      <select onchange="location.href=this.value">
+        {% for value, label in [("month", "1か月"), ("week", "1週間"), ("day", "1日")] %}
+        <option value="{{ url_for('timeline', month=month.strftime('%Y-%m'), period=value, date=selected_date) }}" {% if period == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <strong>ファイルがある日: 色付き・件数表示</strong>
+    <a class="button secondary" href="{{ url_for('timeline', month=next_month) }}">次月</a>
+  </div>
+  <section class="calendar">
+    {% for weekday in ["月", "火", "水", "木", "金", "土", "日"] %}
+    <div class="calendar-weekday">{{ weekday }}</div>
+    {% endfor %}
+    {% for week in weeks %}
+      {% for day in week %}
+      {% set day_value = day.isoformat() %}
+      {% set count = counts.get(day_value, 0) %}
+      <a class="calendar-day{% if day.month != month.month %} outside{% endif %}{% if count %} has-files{% endif %}{% if selected_date == day_value %} selected{% endif %}"
+         href="{{ url_for('timeline', month=month.strftime('%Y-%m'), date=day_value, period=period) }}">
+        <strong>{{ day }}</strong>
+        {% if count %}<span>{{ count }}件</span>{% else %}<span>なし</span>{% endif %}
+      </a>
+      {% endfor %}
+    {% endfor %}
+  </section>
+  {% if selected_date %}
+  <h2 class="timeline-heading">{{ selected_date }}の{{ {"month": "月", "week": "週", "day": "日"}[period] }}のファイル（{{ documents|length }}件）</h2>
+  {% if documents %}
+  <section class="results">
+    {% for document in documents %}
+    <article>
+      {% if document.thumbnail_path %}
+      <img class="thumb" src="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}" alt="1ページ目" data-full-image="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}">
+      {% endif %}
+      <h2><a href="{{ url_for('document_file', sha256=document.sha256, kind='pdf') }}">{{ document.display_filename }}</a></h2>
+      <div class="meta">{{ document.original_modified }} / {{ document.status }}</div>
+      <p class="document-note">{{ document.note or 'メモなし' }}</p>
+      <p class="tags">タグ: {{ document.tag_names or 'なし' }}</p>
+      <a class="button secondary" href="{{ url_for('edit_document', sha256=document.sha256) }}">内容を編集</a>
+    </article>
+    {% endfor %}
+  </section>
+  {% else %}<p class="empty">この日に追加されたファイルはありません。</p>{% endif %}
+  {% endif %}
+</main>
+</body>
+</html>

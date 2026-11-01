@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ファイル編集 - Scan Archive</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>ファイル編集</span></div></header>
+<main>
+  <div class="page-heading">
+    <div><p class="eyebrow">EDIT DOCUMENT</p><h1>ファイル内容を編集</h1></div>
+    <a class="button secondary" href="{{ url_for('webui') }}">検索へ戻る</a>
+  </div>
+  <article class="edit-card">
+    {% if document.thumbnail_path %}
+    <img class="thumb edit-thumb" src="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}" alt="1ページ目">
+    {% endif %}
+    <h2>{{ document.pdf_path }}</h2>
+    <div class="meta">{{ document.original_modified }} / {{ document.status }}</div>
+    <form method="post" action="{{ url_for('update_document', sha256=document.sha256) }}">
+      <label>メモ<textarea name="note">{{ document.note or '' }}</textarea></label>
+      <label>タグ
+        <div class="tag-picker" data-priority-tags='{{ priority_tags | tojson }}' data-value="{{ document.tag_names or '' }}">
+          <div class="tag-chips"></div>
+          <input class="tag-input" type="text" autocomplete="off" placeholder="タグを入力して選択">
+          <div class="tag-suggestions"></div>
+          <input class="tag-value" type="hidden" name="tags">
+        </div>
+      </label>
+      <div class="actions"><button type="submit">保存</button><a class="button secondary" href="{{ url_for('document_file', sha256=document.sha256, kind='pdf') }}">PDFを開く</a></div>
+    </form>
+  </article>
+</main>
+<script>
+  document.querySelectorAll(".tag-picker").forEach((picker) => {
+    const input = picker.querySelector(".tag-input");
+    const hidden = picker.querySelector(".tag-value");
+    const chips = picker.querySelector(".tag-chips");
+    const suggestions = picker.querySelector(".tag-suggestions");
+    const priorityTags = JSON.parse(picker.dataset.priorityTags || "[]");
+    let tags = (picker.dataset.value || "").split(/[,\s]+/).filter(Boolean);
+
+    function sync() {
+      hidden.value = tags.join(",");
+      chips.replaceChildren();
+      tags.forEach((tag) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "tag-chip";
+        chip.textContent = tag + " ×";
+        chip.onclick = () => { tags = tags.filter((value) => value !== tag); sync(); };
+        chips.appendChild(chip);
+      });
+    }
+
+    function showSuggestions() {
+      const query = input.value.toLocaleLowerCase();
+      suggestions.replaceChildren();
+      priorityTags.filter((tag) => !tags.includes(tag))
+        .filter((tag) => !query || tag.toLocaleLowerCase().includes(query))
+        .forEach((tag) => {
+          const option = document.createElement("button");
+          option.type = "button";
+          option.className = "tag-suggestion";
+          option.textContent = tag;
+          option.onclick = () => { tags.push(tag); input.value = ""; sync(); showSuggestions(); };
+          suggestions.appendChild(option);
+        });
+    }
+    input.addEventListener("focus", showSuggestions);
+    input.addEventListener("input", showSuggestions);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && input.value.trim()) {
+        event.preventDefault();
+        tags.push(input.value.trim());
+        input.value = "";
+        sync();
+        showSuggestions();
+      }
+    });
+    picker.closest("form").addEventListener("submit", sync);
+    sync();
+  });
+</script>
+</body>
+</html>
