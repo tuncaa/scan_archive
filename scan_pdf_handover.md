@@ -110,6 +110,9 @@ C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_ar
 # BATから新規PDFの取り込みと未完了OCRを実行
 C:\pytmp\pdf2ocrandfold\process_scan.bat
 
+# スキャン処理後にWeb UIを開き、端末をシャットダウン（60秒後）
+C:\pytmp\pdf2ocrandfold\process_scan_and_shutdown.bat
+
 # 保存済み本文・元ファイルパスのキーワード検索
 C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_archive.py --search "請求書"
 
@@ -117,10 +120,11 @@ C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_ar
 C:\pytmp\pdf2ocrandfold\start_webui.bat
 ```
 
+`start_webui.bat`はWeb UI起動時にブラウザで`http://127.0.0.1:5000`を開く。
+
 - Python依存モジュール一覧は `requirements.txt` に記載する。
 - `setup_venv.bat` はスクリプトと同じフォルダに `.venv` を作成し、依存モジュールを導入する。
 - `pymupdf` はPythonモジュールとして導入するが、OCRには別途Tesseract本体と `jpn.traineddata` / `eng.traineddata` が必要。
-  - https://github.com/tesseract-ocr/tessdata_fast/blob/main/jpn_vert.traineddata
 - 検索結果には、整理用日時・状態・本文の抜粋・PDFのパスを表示する。
 - PDFを自動で開く機能は含まれていない。日付範囲検索とファイル管理用Web UIは下記の機能として提供する。
 

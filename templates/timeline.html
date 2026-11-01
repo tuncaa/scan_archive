@@ -7,7 +7,11 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
-<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>時系列</span></div></header>
+<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>時系列</span><nav class="site-nav">
+  <a href="{{ url_for('webui') }}">検索</a>
+  <a href="{{ url_for('webui', untagged='1') }}">未タグ一覧</a>
+  <a href="{{ url_for('tag_list') }}">タグ一覧</a>
+</nav></div></header>
 <main>
   <div class="page-heading">
     <div><p class="eyebrow">TIMELINE</p><h1>{{ month.year }}年{{ month.month }}月</h1></div>

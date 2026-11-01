@@ -20,6 +20,7 @@ if not exist "%SCRIPT%" (
 
 echo Starting Web UI at http://127.0.0.1:5000
 echo Close this window to stop the Web UI.
+start "" "http://127.0.0.1:5000"
 "%PYTHON%" "%SCRIPT%" --webui --host 127.0.0.1 --port 5000
 set "EXIT_CODE=%ERRORLEVEL%"
 

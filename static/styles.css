@@ -22,6 +22,9 @@ body {
 .shell { display: flex; align-items: center; gap: 14px; padding: 20px 0; }
 .shell strong { font-size: 1.15rem; letter-spacing: -.02em; }
 .shell span { color: #94a3b8; font-size: .85rem; }
+.site-nav { display: flex; gap: 8px; margin-left: auto; }
+.site-nav a { padding: 7px 10px; border-radius: 7px; color: #cbd5e1; font-size: .85rem; text-decoration: none; }
+.site-nav a:hover { color: white; background: #1e293b; }
 main { padding: 42px 0 64px; }
 .page-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 24px; }
 .eyebrow { margin: 0; color: var(--primary); font-size: .72rem; font-weight: 800; letter-spacing: .14em; }
@@ -80,12 +83,15 @@ article h2 a, a { color: var(--primary); }
 .document-note { padding: 8px; color: var(--muted); background: #f8fafc; border-radius: 7px; white-space: pre-wrap; }
 .edit-card { max-width: 760px; margin: auto; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
 .edit-thumb { max-height: 320px; }
-.tag-list { display: grid; gap: 12px; }
-.tag-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+.tag-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.tag-card { display: flex; flex-direction: column; align-items: stretch; justify-content: space-between; gap: 12px; min-width: 0; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
 .tag-card > div:first-child { display: flex; align-items: center; gap: 10px; }
 .tag-card > div:first-child span { color: var(--muted); font-size: .85rem; }
 .tag-card > div:first-child { flex: 1; }
 .tag-card input { width: auto; accent-color: var(--primary); }
+.tag-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-card .actions { flex-wrap: wrap; margin-top: 0; }
+.tag-card .actions .button, .tag-card .actions button { flex: 1; min-width: 110px; padding: 8px 10px; font-size: .82rem; }
 .bulk-tag-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; color: var(--muted); font-size: .82rem; font-weight: 700; }
 .tag-button { padding: 6px 10px; border-radius: 999px; color: #3730a3; background: #e0e7ff; }
 .tag-picker { position: relative; padding: 6px; border: 1px solid #cbd5e1; border-radius: 9px; background: #f8fafc; }
@@ -108,6 +114,8 @@ article h2 a, a { color: var(--primary); }
   .search { grid-template-columns: 1fr; }
   .bulk-bar { flex-direction: column; }
   .bulk-bar label { min-width: 0; }
+  .site-nav { flex-wrap: wrap; justify-content: end; gap: 2px; }
+  .site-nav a { padding: 5px 6px; font-size: .75rem; }
   .calendar { gap: 4px; }
   .calendar-day { min-height: 42px; padding: 4px; font-size: .75rem; }
 }

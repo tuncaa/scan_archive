@@ -7,7 +7,11 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
-<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>タグ一覧</span></div></header>
+<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>タグ一覧</span><nav class="site-nav">
+  <a href="{{ url_for('webui') }}">検索</a>
+  <a href="{{ url_for('webui', untagged='1') }}">未タグ一覧</a>
+  <a href="{{ url_for('timeline') }}">時系列</a>
+</nav></div></header>
 <main>
   <div class="page-heading">
     <div><p class="eyebrow">TAGS</p><h1>タグ一覧</h1></div>
@@ -15,6 +19,10 @@
   </div>
   {% if tags %}
   <form id="tag-selection-form" method="get" action="{{ url_for('webui') }}"></form>
+  {% for tag in tags %}
+  <form id="hide-tag-{{ tag.id }}" method="post" action="{{ url_for('hide_tag', tag_id=tag.id) }}"></form>
+  <form id="priority-tag-{{ tag.id }}" method="post" action="{{ url_for('toggle_tag_priority', tag_id=tag.id) }}"></form>
+  {% endfor %}
   <section class="tag-list">
     {% for tag in tags %}
     <label class="tag-card">
@@ -27,8 +35,6 @@
         <button class="danger" type="submit" form="hide-tag-{{ tag.id }}">一覧から削除</button>
       </div>
     </label>
-    <form id="hide-tag-{{ tag.id }}" method="post" action="{{ url_for('hide_tag', tag_id=tag.id) }}"></form>
-    <form id="priority-tag-{{ tag.id }}" method="post" action="{{ url_for('toggle_tag_priority', tag_id=tag.id) }}"></form>
     {% endfor %}
   </section>
   <div class="actions">
