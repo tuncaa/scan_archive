@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scan Archive</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>Document library</span></div></header>
+<main>
+  <div class="page-heading"><div><p class="eyebrow">ARCHIVE</p><h1>ドキュメント検索</h1></div><p class="result-count">{{ documents|length }}件{% if untagged %}（タグ未設定）{% endif %}</p></div>
+  <form class="search" method="get" action="{{ url_for('webui') }}">
+    <label>ファイル名<input name="filename" value="{{ filters.filename }}"></label>
+    <label>OCR本文<input name="text" value="{{ filters.text }}"></label>
+    <label>タグ（複数は空白区切り）<input name="tag" value="{{ filters.tag }}"></label>
+    <label>日時（開始）<input type="date" name="from_date" value="{{ filters.from_date }}"></label>
+    <label>日時（終了）<input type="date" name="to_date" value="{{ filters.to_date }}"></label>
+    <div class="actions">
+      <button type="submit">検索</button>
+      <a class="button secondary" href="{{ url_for('webui', untagged='1') }}">未タグを一覧</a>
+    </div>
+  </form>
+  {% if documents %}
+  <form id="bulk-form" method="post" action="{{ url_for('bulk_update_documents') }}">
+    <div class="bulk-bar">
+      <strong>一括編集</strong>
+      <label>一括メモ（空欄は変更しない）<input name="note"></label>
+      <label>一括タグ（空欄は変更しない）<input name="tags" placeholder="カンマ・空白区切り"></label>
+      <button type="submit">選択項目に適用</button>
+    </div>
+  </form>
+  <section class="results">
+  {% for document in documents %}
+    <article>
+      <label class="select-document"><input type="checkbox" name="sha256" value="{{ document.sha256 }}" form="bulk-form"> 選択</label>
+      {% if document.thumbnail_path %}
+      <img class="thumb" src="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}" alt="1ページ目" data-full-image="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}">
+      {% endif %}
+      <h2><a href="{{ url_for('document_file', sha256=document.sha256, kind='pdf') }}">{{ document.display_filename }}</a></h2>
+      <div class="meta">{{ document.original_modified }} <span class="status">{{ document.status }}</span></div>
+      <div class="meta path" title="{{ document.original_path }}">{{ document.original_path }}</div>
+      <p class="tags">タグ: {{ document.tag_names or 'なし' }}</p>
+      <form method="post" action="{{ url_for('update_document', sha256=document.sha256) }}">
+        <label>メモ<textarea name="note">{{ document.note or '' }}</textarea></label>
+        <label>タグ（複数はカンマ・改行・空白区切り）<input name="tags" value="{{ document.tag_names or '' }}"></label>
+        <div class="actions"><button type="submit">保存</button>
+          <a href="{{ url_for('document_file', sha256=document.sha256, kind='txt') }}">OCR本文</a></div>
+      </form>
+    </article>
+  {% endfor %}
+  </section>
+  {% else %}<p class="empty">該当するファイルはありません。</p>{% endif %}
+</main>
+<div class="modal" id="image-modal" role="dialog" aria-modal="true" aria-label="サムネイル拡大表示">
+  <span class="modal-close" aria-label="閉じる">&times;</span>
+  <img alt="拡大表示">
+</div>
+<script>
+  const modal = document.getElementById("image-modal");
+  const modalImage = modal.querySelector("img");
+
+  function closeModal() {
+    modal.classList.remove("open");
+    modalImage.removeAttribute("src");
+    modalImage.className = "";
+  }
+
+  document.querySelectorAll(".thumb").forEach((thumbnail) => {
+    thumbnail.addEventListener("click", () => {
+      modalImage.src = thumbnail.dataset.fullImage;
+      modalImage.className = "fit";
+      modal.classList.add("open");
+    });
+  });
+  modalImage.addEventListener("click", (event) => {
+    event.stopPropagation();
+    modalImage.classList.toggle("fit");
+    modalImage.classList.toggle("original");
+  });
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal || event.target.classList.contains("modal-close")) {
+      closeModal();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeModal();
+    }
+  });
+</script>
+</body>
+</html>

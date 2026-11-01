@@ -10,16 +10,26 @@ import shutil
 import sqlite3
 import time
 
+from flask import (
+    Flask,
+    abort,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 import pymupdf
 
 
 # ---------- 設定：実際の環境に合わせて変更 ----------
-SOURCE = Path(r"C:\scanner_output")  # スキャナーの保存先
-DEST = Path(r"C:\scan")              # PDF・TXTの保管先
+SOURCE = Path(r"C:\tmp\scan-tmp\moto")  # スキャナーの保存先
+DEST = Path(r"C:\tmp\scan-tmp\saki")              # PDF・TXTの保管先
 
-TESSDATA = Path(r"C:\Program Files\Tesseract-OCR\tessdata")
+TESSDATA = Path(__file__).resolve().parent / "tessdata"
 LANGUAGE = "jpn+eng"
 DPI = 300
+THUMBNAIL_DPI = 150
 
 STABLE_SECONDS = 10   # 一覧取得後、この秒数待ってサイズ・日時を再確認
 MIN_TEXT_CHARS = 10   # これ未満なら「要確認」として保存
@@ -38,6 +48,10 @@ def timestamp_iso(seconds):
     return datetime.fromtimestamp(seconds).astimezone().isoformat(
         timespec="seconds"
     )
+
+
+def normalize_ocr_text(text):
+    return text.replace(" ", "").replace("\u3000", "")
 
 
 def fingerprint(path):
@@ -100,7 +114,9 @@ def open_database():
             status TEXT NOT NULL DEFAULT 'pending',
             body TEXT,
             error TEXT,
-            processed_at TEXT
+            processed_at TEXT,
+            thumbnail_path TEXT,
+            note TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS source_files (
@@ -109,7 +125,35 @@ def open_database():
             last_seen TEXT NOT NULL,
             PRIMARY KEY (source_path, sha256)
         );
+
+        CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        );
+
+        CREATE TABLE IF NOT EXISTS document_tags (
+            sha256 TEXT NOT NULL REFERENCES documents(sha256)
+                ON DELETE CASCADE,
+            tag_id INTEGER NOT NULL REFERENCES tags(id)
+                ON DELETE CASCADE,
+            PRIMARY KEY (sha256, tag_id)
+        );
     """)
+
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(documents)")
+    }
+    if "thumbnail_path" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN thumbnail_path TEXT"
+        )
+    if "note" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+        )
+
+    connection.execute("PRAGMA foreign_keys = ON")
     connection.commit()
     return connection
 
@@ -129,6 +173,35 @@ def collect_candidates():
             logging.exception("候補ファイルの確認失敗: %s", path)
 
     return candidates
+
+
+def thumbnail_path_for(pdf_path):
+    return pdf_path.with_suffix(".png")
+
+
+def create_thumbnail(pdf_path, thumbnail_path):
+    if thumbnail_path.exists():
+        return
+
+    with pymupdf.open(pdf_path) as document:
+        if document.needs_pass:
+            raise RuntimeError("パスワード付きPDFです。")
+        if document.page_count == 0:
+            raise RuntimeError("ページがありません。")
+
+        matrix = pymupdf.Matrix(
+            THUMBNAIL_DPI / 72,
+            THUMBNAIL_DPI / 72,
+        )
+        pixmap = document[0].get_pixmap(matrix=matrix, alpha=False)
+
+    temporary = WORK / f"{thumbnail_path.name}.part"
+    try:
+        pixmap.save(str(temporary), output="png")
+        os.replace(temporary, thumbnail_path)
+        logging.info("サムネイル保存: %s", thumbnail_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def import_pdf(connection, source, expected):
@@ -160,6 +233,11 @@ def import_pdf(connection, source, expected):
         pdf_path = folder / f"{stem}.pdf"
         txt_path = folder / f"{stem}.txt"
 
+    thumbnail_path = (
+        Path(existing["thumbnail_path"])
+        if existing and existing["thumbnail_path"]
+        else thumbnail_path_for(pdf_path)
+    )
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 既存PDFが欠落・破損していればコピー元から復旧
@@ -185,6 +263,8 @@ def import_pdf(connection, source, expected):
         finally:
             temporary.unlink(missing_ok=True)
 
+    create_thumbnail(pdf_path, thumbnail_path)
+
     if not existing:
         # Python 3.12以降ではWindowsの作成日時にst_birthtimeを使用
         created = getattr(stat, "st_birthtime", stat.st_ctime)
@@ -192,8 +272,9 @@ def import_pdf(connection, source, expected):
         connection.execute("""
             INSERT INTO documents (
                 sha256, pdf_path, txt_path, original_path,
-                original_created, original_modified, imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                original_created, original_modified, imported_at,
+                thumbnail_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             digest,
             str(pdf_path),
@@ -202,14 +283,30 @@ def import_pdf(connection, source, expected):
             timestamp_iso(created),
             timestamp_iso(stat.st_mtime),
             now_iso(),
+            str(thumbnail_path),
         ))
 
-    elif not txt_path.exists():
+    elif not txt_path.exists() or existing["thumbnail_path"] != str(
+        thumbnail_path
+    ):
         connection.execute("""
             UPDATE documents
-            SET status = 'pending', error = NULL
+            SET status = CASE
+                    WHEN ? THEN 'pending'
+                    ELSE status
+                END,
+                error = CASE
+                    WHEN ? THEN NULL
+                    ELSE error
+                END,
+                thumbnail_path = ?
             WHERE sha256 = ?
-        """, (digest,))
+        """, (
+            not txt_path.exists(),
+            not txt_path.exists(),
+            str(thumbnail_path),
+            digest,
+        ))
 
     connection.execute("""
         INSERT INTO source_files (source_path, sha256, last_seen)
@@ -219,6 +316,32 @@ def import_pdf(connection, source, expected):
     """, (str(source.resolve()), digest, now_iso()))
 
     connection.commit()
+
+
+def process_thumbnails(connection):
+    rows = connection.execute("""
+        SELECT sha256, pdf_path, thumbnail_path
+        FROM documents
+    """).fetchall()
+
+    for row in rows:
+        pdf_path = Path(row["pdf_path"])
+        thumbnail_path = (
+            Path(row["thumbnail_path"])
+            if row["thumbnail_path"]
+            else thumbnail_path_for(pdf_path)
+        )
+        try:
+            create_thumbnail(pdf_path, thumbnail_path)
+            if row["thumbnail_path"] != str(thumbnail_path):
+                connection.execute("""
+                    UPDATE documents
+                    SET thumbnail_path = ?
+                    WHERE sha256 = ?
+                """, (str(thumbnail_path), row["sha256"]))
+                connection.commit()
+        except Exception:
+            logging.exception("サムネイル失敗: %s", pdf_path)
 
 
 def process_ocr(connection):
@@ -232,6 +355,12 @@ def process_ocr(connection):
         try:
             pdf_path = Path(row["pdf_path"])
             txt_path = Path(row["txt_path"])
+            thumbnail_path = (
+                Path(row["thumbnail_path"])
+                if row["thumbnail_path"]
+                else thumbnail_path_for(pdf_path)
+            )
+            create_thumbnail(pdf_path, thumbnail_path)
 
             with pymupdf.open(pdf_path) as document:
                 if document.needs_pass:
@@ -249,6 +378,7 @@ def process_ocr(connection):
                 body = page.get_text(
                     "text", textpage=text_page, sort=True
                 ).strip()
+                body = normalize_ocr_text(body)
 
             count = sum(not char.isspace() for char in body)
             status = "done" if count >= MIN_TEXT_CHARS else "review"
@@ -263,6 +393,7 @@ def process_ocr(connection):
                 f"処理日時: {processed_at}\n"
                 f"元ファイル: {row['original_path']}\n"
                 f"保存PDF: {row['pdf_path']}\n"
+                f"サムネイル: {thumbnail_path}\n"
                 f"対象: 1ページ目のみ\n"
                 f"OCR言語: {LANGUAGE}\n"
                 f"状態: {status}\n\n"
@@ -279,9 +410,15 @@ def process_ocr(connection):
             connection.execute("""
                 UPDATE documents
                 SET status = ?, body = ?, error = NULL,
-                    processed_at = ?
+                    processed_at = ?, thumbnail_path = ?
                 WHERE sha256 = ?
-            """, (status, body, processed_at, row["sha256"]))
+            """, (
+                status,
+                body,
+                processed_at,
+                str(thumbnail_path),
+                row["sha256"],
+            ))
             connection.commit()
 
             logging.info("OCR完了 [%s]: %s", status, pdf_path)
@@ -298,25 +435,35 @@ def process_ocr(connection):
 
 def search_documents(connection, keyword):
     # %や_をワイルドカードと解釈せず、文字列として検索
-    escaped = (
+    escaped_path = (
         keyword.replace("\\", "\\\\")
         .replace("%", "\\%")
         .replace("_", "\\_")
     )
-    pattern = f"%{escaped}%"
+    normalized_keyword = normalize_ocr_text(keyword)
+    escaped_body = (
+        normalized_keyword.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    path_pattern = f"%{escaped_path}%"
+    body_pattern = f"%{escaped_body}%"
 
     rows = connection.execute("""
         SELECT original_modified, pdf_path, status, body
         FROM documents
-        WHERE body LIKE ? ESCAPE '\\'
+        WHERE replace(replace(body, ' ', ''), '　', '')
+                  LIKE ? ESCAPE '\\'
            OR original_path LIKE ? ESCAPE '\\'
         ORDER BY original_modified DESC
-    """, (pattern, pattern)).fetchall()
+    """, (body_pattern, path_pattern)).fetchall()
 
     print(f"検索結果: {len(rows)}件")
     for row in rows:
         body = row["body"] or ""
-        position = body.casefold().find(keyword.casefold())
+        position = normalize_ocr_text(body).casefold().find(
+            normalized_keyword.casefold()
+        )
         start = max(0, position - 30)
         excerpt = body[start:start + 160].replace("\n", " ")
 
@@ -326,9 +473,231 @@ def search_documents(connection, keyword):
         print(f"抜粋: {excerpt}")
 
 
+def create_webui():
+    app = Flask(__name__)
+
+    def query_documents(filters, untagged):
+        connection = open_database()
+        try:
+            conditions = []
+            parameters = []
+            if filters["filename"]:
+                conditions.append(
+                    "(pdf_path LIKE ? OR original_path LIKE ?)"
+                )
+                pattern = f"%{filters['filename']}%"
+                parameters.extend((pattern, pattern))
+            if filters["text"]:
+                conditions.append("""
+                    replace(replace(body, ' ', ''), '　', '') LIKE ?
+                """)
+                parameters.append(
+                    f"%{normalize_ocr_text(filters['text'])}%"
+                )
+            if filters["from_date"]:
+                conditions.append("date(original_modified) >= date(?)")
+                parameters.append(filters["from_date"])
+            if filters["to_date"]:
+                conditions.append("date(original_modified) <= date(?)")
+                parameters.append(filters["to_date"])
+            if untagged:
+                conditions.append("""
+                    NOT EXISTS (
+                        SELECT 1 FROM document_tags dt
+                        WHERE dt.sha256 = d.sha256
+                    )
+                """)
+
+            tag_terms = [
+                term for term in filters["tag"].replace(",", " ").split()
+                if term
+            ]
+            for term in tag_terms:
+                conditions.append("""
+                    EXISTS (
+                        SELECT 1
+                        FROM document_tags dt
+                        JOIN tags t ON t.id = dt.tag_id
+                        WHERE dt.sha256 = d.sha256 AND t.name LIKE ?
+                    )
+                """)
+                parameters.append(f"%{term}%")
+
+            where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            return connection.execute(f"""
+                SELECT d.*,
+                       GROUP_CONCAT(t.name, ', ') AS tag_names,
+                       COALESCE(NULLIF(d.pdf_path, ''), d.original_path)
+                           AS filename_path
+                FROM documents d
+                LEFT JOIN document_tags dt ON dt.sha256 = d.sha256
+                LEFT JOIN tags t ON t.id = dt.tag_id
+                {where}
+                GROUP BY d.sha256
+                ORDER BY d.original_modified DESC
+            """, parameters).fetchall()
+        finally:
+            connection.close()
+
+    @app.get("/")
+    def webui():
+        filters = {
+            key: request.args.get(key, "").strip()
+            for key in ("filename", "text", "tag", "from_date", "to_date")
+        }
+        untagged = request.args.get("untagged") == "1"
+        documents = query_documents(filters, untagged)
+        documents = [
+            {
+                **{column: document[column] for column in document.keys()},
+                "filename": Path(document["filename_path"]).name,
+                "display_filename": "_".join(
+                    Path(document["filename_path"]).stem.split("_")[:2]
+                ),
+            }
+            for document in documents
+        ]
+        return render_template(
+            "index.html",
+            documents=documents,
+            filters=filters,
+            untagged=untagged,
+        )
+
+    @app.post("/documents/<sha256>/update")
+    def update_document(sha256):
+        note = request.form.get("note", "").strip()
+        raw_tags = request.form.get("tags", "")
+        tag_names = {
+            tag.strip() for tag in raw_tags.replace(",", " ").split()
+            if tag.strip()
+        }
+        connection = open_database()
+        try:
+            if not connection.execute(
+                "SELECT 1 FROM documents WHERE sha256 = ?", (sha256,)
+            ).fetchone():
+                abort(404)
+            connection.execute(
+                "UPDATE documents SET note = ? WHERE sha256 = ?",
+                (note, sha256),
+            )
+            connection.execute(
+                "DELETE FROM document_tags WHERE sha256 = ?", (sha256,)
+            )
+            for name in sorted(tag_names):
+                connection.execute(
+                    "INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,)
+                )
+                tag_id = connection.execute(
+                    "SELECT id FROM tags WHERE name = ?", (name,)
+                ).fetchone()["id"]
+                connection.execute(
+                    "INSERT INTO document_tags (sha256, tag_id) VALUES (?, ?)",
+                    (sha256, tag_id),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+        return redirect(url_for("webui"))
+
+    @app.post("/documents/bulk-update")
+    def bulk_update_documents():
+        sha256s = list(dict.fromkeys(request.form.getlist("sha256")))
+        if not sha256s:
+            abort(400, description="一括更新するファイルを1件以上選択してください。")
+
+        note = request.form.get("note", "").strip()
+        raw_tags = request.form.get("tags", "").strip()
+        tag_names = {
+            tag.strip() for tag in raw_tags.replace(",", " ").split()
+            if tag.strip()
+        }
+        if not note and not raw_tags:
+            abort(400, description="メモまたはタグを入力してください。")
+
+        connection = open_database()
+        try:
+            placeholders = ",".join("?" for _ in sha256s)
+            existing = {
+                row["sha256"]
+                for row in connection.execute(
+                    f"SELECT sha256 FROM documents WHERE sha256 IN ({placeholders})",
+                    sha256s,
+                )
+            }
+            if existing != set(sha256s):
+                abort(404)
+
+            if note:
+                connection.executemany(
+                    "UPDATE documents SET note = ? WHERE sha256 = ?",
+                    [(note, sha256) for sha256 in sha256s],
+                )
+
+            if raw_tags:
+                for name in sorted(tag_names):
+                    connection.execute(
+                        "INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,)
+                    )
+
+                tag_ids = {
+                    name: connection.execute(
+                        "SELECT id FROM tags WHERE name = ?", (name,)
+                    ).fetchone()["id"]
+                    for name in tag_names
+                }
+                for sha256 in sha256s:
+                    connection.execute(
+                        "DELETE FROM document_tags WHERE sha256 = ?",
+                        (sha256,),
+                    )
+                    connection.executemany(
+                        "INSERT INTO document_tags (sha256, tag_id) VALUES (?, ?)",
+                        [(sha256, tag_ids[name]) for name in sorted(tag_names)],
+                    )
+            connection.commit()
+        finally:
+            connection.close()
+        return redirect(url_for("webui"))
+
+    @app.get("/documents/<sha256>/<kind>")
+    def document_file(sha256, kind):
+        if kind not in {"pdf", "thumbnail", "txt"}:
+            abort(404)
+        connection = open_database()
+        try:
+            row = connection.execute(
+                "SELECT pdf_path, thumbnail_path, txt_path "
+                "FROM documents WHERE sha256 = ?", (sha256,)
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            abort(404)
+        column = {
+            "pdf": "pdf_path",
+            "thumbnail": "thumbnail_path",
+            "txt": "txt_path",
+        }[kind]
+        path = Path(row[column])
+        if not path.is_file():
+            abort(404)
+        return send_file(path)
+
+    return app
+
+
+def run_webui(host, port):
+    create_webui().run(host=host, port=port, debug=False)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--search", metavar="KEYWORD")
+    parser.add_argument("--webui", action="store_true")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=5000)
     args = parser.parse_args()
 
     SYSTEM.mkdir(parents=True, exist_ok=True)
@@ -344,6 +713,10 @@ def main():
             logging.StreamHandler(),
         ],
     )
+
+    if args.webui:
+        run_webui(args.host, args.port)
+        return
 
     with single_instance():
         connection = open_database()
@@ -379,6 +752,7 @@ def main():
                 )
 
             # コピー元が消えていても、保存済みの未完了PDFは処理する
+            process_thumbnails(connection)
             process_ocr(connection)
 
             counts = connection.execute("""

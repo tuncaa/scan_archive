@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 set "VENV_DIR=%~dp0.venv"
 set "PYTHON=%VENV_DIR%\Scripts\python.exe"
-set "TESSDATA=C:\Program Files\Tesseract-OCR\tessdata"
+set "TESSDATA=%~dp0tessdata"
 
 where py >nul 2>&1
 if errorlevel 1 (
@@ -45,6 +45,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Verifying Flask...
+"%PYTHON%" -c "import flask; print('Flask:', flask.__version__)"
+if errorlevel 1 (
+    echo ERROR: Flask could not be imported.
+    exit /b 1
+)
+
 if not exist "%TESSDATA%\jpn.traineddata" (
     echo WARNING: Tesseract Japanese data was not found:
     echo          "%TESSDATA%\jpn.traineddata"
@@ -60,4 +67,6 @@ echo Run with:
 echo   "%PYTHON%" "%~dp0scan_archive.py"
 echo Search with:
 echo   "%PYTHON%" "%~dp0scan_archive.py" --search "keyword"
+echo Web UI with:
+echo   "%PYTHON%" "%~dp0scan_archive.py" --webui
 exit /b 0

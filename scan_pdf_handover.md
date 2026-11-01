@@ -22,14 +22,16 @@
 5. PDF全体のSHA-256を使って内容の重複を判定する。
 6. 未保存のPDFだけをコピーし、コピー後のハッシュを検証する。
 7. 各PDFの1ページ目だけを日本語＋英語でOCRする。
-8. OCR本文と関連情報をUTF-8のTXTに保存する。
-9. SQLiteの処理台帳に保存先・日時・本文・処理状態を記録する。
-10. 保存済み本文と元ファイルパスをキーワードで検索し、対応するPDFのパスを表示する。
+8. 各PDFの1ページ目をPNGサムネイルとして保存する。
+9. OCR本文の半角・全角スペースを除去し、関連情報とともにUTF-8のTXTへ保存する。
+10. SQLiteの処理台帳に保存先・日時・本文・処理状態を記録する。
+11. 保存済み本文と元ファイルパスをキーワードで検索し、対応するPDFのパスを表示する。
 
 ## 保存方針
 
 - 保存ルート：`C:\scan\`
 - PDFとTXTは年月別フォルダに保存し、同じ基本名で対応づける。
+- 1ページ目のサムネイルも同じ年月フォルダに、PDFと同じ基本名のPNGとして保存する。
 - 整理用日時には、コピー元PDFの更新日時を採用する。
 - ファイル名は「日時＋SHA-256」とする。提示済みコードではSHA-256の全文を使用する。
 - OCR結果をファイル名には使わない。
@@ -43,6 +45,7 @@ C:\scan\
 ├─ 2026\
 │  └─ 11\
 │     ├─ 20261101_143025_＜SHA-256＞.pdf
+│     ├─ 20261101_143025_＜SHA-256＞.png
 │     └─ 20261101_143025_＜SHA-256＞.txt
 ├─ _system\
 │  ├─ index.sqlite
@@ -59,6 +62,7 @@ C:\scan\
 - 取込日時・処理日時
 - 元ファイルのフルパス
 - 保存PDFのフルパス
+- 1ページ目サムネイルのフルパス
 - OCR対象が1ページ目のみであること
 - OCR言語・処理状態
 - 1ページ目のOCR本文
@@ -103,21 +107,46 @@ C:\pytmp\pdf2ocrandfold\setup_venv.bat
 # 新規PDFの取り込みと未完了OCRの処理
 C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_archive.py
 
+# BATから新規PDFの取り込みと未完了OCRを実行
+C:\pytmp\pdf2ocrandfold\process_scan.bat
+
 # 保存済み本文・元ファイルパスのキーワード検索
 C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_archive.py --search "請求書"
+
+# BATからWeb UIを起動
+C:\pytmp\pdf2ocrandfold\start_webui.bat
 ```
 
 - Python依存モジュール一覧は `requirements.txt` に記載する。
 - `setup_venv.bat` はスクリプトと同じフォルダに `.venv` を作成し、依存モジュールを導入する。
 - `pymupdf` はPythonモジュールとして導入するが、OCRには別途Tesseract本体と `jpn.traineddata` / `eng.traineddata` が必要。
 - 検索結果には、整理用日時・状態・本文の抜粋・PDFのパスを表示する。
-- PDFを自動で開く機能、日付範囲検索、GUIは提示済みコードに含まれていない。
+- PDFを自動で開く機能は含まれていない。日付範囲検索とファイル管理用Web UIは下記の機能として提供する。
+
+## Web UI
+
+以下のコマンドで、ローカルWeb UIを起動する。
+
+```powershell
+C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_archive.py --webui
+```
+
+- ファイル名、OCR本文、タグ、更新日時の開始・終了を組み合わせて検索できる。
+- 各ファイルにメモと複数のタグを設定できる。
+- 一覧で複数ファイルを選択し、メモやタグを一括適用できる。一括入力が空欄の項目は既存値を変更しない。
+- 「未タグを一覧」から、タグ未設定のファイルをサムネイル付きで一覧表示できる。
+- ファイルリンクは日時部分を表示し、ハッシュ部分は表示しない。
+- サムネイルをクリックすると画面内に収まるサイズで拡大表示でき、拡大画像をクリックすると原寸大に切り替えられる。
+- PDF、OCR本文、1ページ目サムネイルをWeb UIから開ける。
+- Web UIのHTMLテンプレートは、スクリプト同一フォルダの`templates\index.html`に分離している。
+- Web UIのスタイルは、スクリプト同一フォルダの`static\styles.css`に分離している。
+- 初期設定では`127.0.0.1:5000`で待ち受ける。別の端末から接続する場合は、アクセス制御やファイアウォール設定を確認したうえで`--host`を指定する。
 
 ## 設定が必要な項目
 
 - コピー元フォルダ：ユーザーの実際の場所は未確認。提示済みコードでは `C:\scanner_output` を仮設定。
 - 保存先フォルダ：`C:\scan`。
-- Tesseract言語データの場所：提示済みコードでは `C:\Program Files\Tesseract-OCR\tessdata` を仮設定。
+- Tesseract言語データの場所：スクリプトと同じフォルダの `tessdata`（`jpn.traineddata` と `eng.traineddata`）を初期値とする。
 - スクリプトを保存する場所、使用するPythonのパス。
 - タスク スケジューラの実行間隔：5分間隔などを候補として提案済み。確定していない。
 
