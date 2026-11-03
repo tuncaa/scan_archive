@@ -7,12 +7,13 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>Document library</span><nav class="site-nav">
   <a href="{{ url_for('webui', untagged='1') }}">未タグ一覧</a>
   <a href="{{ url_for('tag_list') }}">タグ一覧</a>
   <a href="{{ url_for('timeline') }}">時系列</a>
 </nav></div></header>
-<main>
+<main id="main-content">
   <div class="page-heading"><div><p class="eyebrow">ARCHIVE</p><h1>ドキュメント検索</h1></div><p class="result-count">{{ documents|length }}件{% if untagged %}（タグ未設定）{% endif %}</p></div>
   <form class="search" method="get" action="{{ url_for('webui') }}">
     <label for="text-search">テキスト検索（ファイル名・OCR本文・メモ）
@@ -64,6 +65,7 @@
       <div class="meta path" title="{{ document.original_path }}">{{ document.original_path }}</div>
       <p class="tags">タグ: {{ document.tag_names or 'なし' }}</p>
       <form method="post" action="{{ url_for('update_document', sha256=document.sha256) }}">
+        {% if untagged %}<input type="hidden" name="untagged" value="1">{% endif %}
         <label>メモ<textarea name="note">{{ document.note or '' }}</textarea></label>
         <label>タグ（複数はカンマ・改行・空白区切り）
           <div class="tag-picker" data-priority-tags='{{ priority_tags | tojson }}' data-value="{{ document.tag_names or '' }}">
@@ -82,24 +84,40 @@
   {% else %}<p class="empty">該当するファイルはありません。</p>{% endif %}
 </main>
 <div class="modal" id="image-modal" role="dialog" aria-modal="true" aria-label="サムネイル拡大表示">
+  <div class="modal-rotate-actions">
+    <button class="modal-rotate" data-degrees="-90" type="button" aria-label="画像を左に90度回転">↺</button>
+    <button class="modal-rotate" data-degrees="90" type="button" aria-label="画像を右に90度回転">↻</button>
+  </div>
   <span class="modal-close" aria-label="閉じる">&times;</span>
   <img alt="拡大表示">
 </div>
 <script>
   const modal = document.getElementById("image-modal");
   const modalImage = modal.querySelector("img");
+  let rotation = 0;
 
   function closeModal() {
     modal.classList.remove("open");
     modalImage.removeAttribute("src");
     modalImage.className = "";
+    modalImage.style.transform = "";
+    rotation = 0;
   }
 
   document.querySelectorAll(".thumb").forEach((thumbnail) => {
     thumbnail.addEventListener("click", () => {
       modalImage.src = thumbnail.dataset.fullImage;
       modalImage.className = "fit";
+      modalImage.style.transform = "";
+      rotation = 0;
       modal.classList.add("open");
+    });
+  });
+  modal.querySelectorAll(".modal-rotate").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      rotation = (rotation + Number(button.dataset.degrees) + 360) % 360;
+      modalImage.style.transform = `rotate(${rotation}deg)`;
     });
   });
   modalImage.addEventListener("click", (event) => {

@@ -7,24 +7,26 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>ファイル編集</span><nav class="site-nav">
   <a href="{{ url_for('webui') }}">検索</a>
   <a href="{{ url_for('webui', untagged='1') }}">未タグ一覧</a>
   <a href="{{ url_for('tag_list') }}">タグ一覧</a>
   <a href="{{ url_for('timeline') }}">時系列</a>
 </nav></div></header>
-<main>
+<main id="main-content">
   <div class="page-heading">
     <div><p class="eyebrow">EDIT DOCUMENT</p><h1>ファイル内容を編集</h1></div>
     <a class="button secondary" href="{{ url_for('webui') }}">検索へ戻る</a>
   </div>
   <article class="edit-card">
     {% if document.thumbnail_path %}
-    <img class="thumb edit-thumb" src="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}" alt="1ページ目">
+    <img class="thumb edit-thumb" src="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}" alt="1ページ目" data-full-image="{{ url_for('document_file', sha256=document.sha256, kind='thumbnail') }}">
     {% endif %}
     <h2>{{ document.pdf_path }}</h2>
     <div class="meta">{{ document.original_modified }} / {{ document.status }}</div>
     <form method="post" action="{{ url_for('update_document', sha256=document.sha256) }}">
+      {% if request.args.get('untagged') == '1' %}<input type="hidden" name="untagged" value="1">{% endif %}
       <label>メモ<textarea name="note">{{ document.note or '' }}</textarea></label>
       <label>タグ
         <div class="tag-picker" data-priority-tags='{{ priority_tags | tojson }}' data-value="{{ document.tag_names or '' }}">
@@ -38,7 +40,49 @@
     </form>
   </article>
 </main>
+<div class="modal" id="image-modal" role="dialog" aria-modal="true" aria-label="サムネイル拡大表示">
+  <div class="modal-rotate-actions">
+    <button class="modal-rotate" data-degrees="-90" type="button" aria-label="画像を左に90度回転">↺</button>
+    <button class="modal-rotate" data-degrees="90" type="button" aria-label="画像を右に90度回転">↻</button>
+  </div>
+  <span class="modal-close" aria-label="閉じる">&times;</span>
+  <img alt="拡大表示">
+</div>
 <script>
+  const modal = document.getElementById("image-modal");
+  const modalImage = modal.querySelector("img");
+  let rotation = 0;
+
+  function closeModal() {
+    modal.classList.remove("open");
+    modalImage.removeAttribute("src");
+    modalImage.style.transform = "";
+    rotation = 0;
+  }
+
+  document.querySelectorAll(".thumb[data-full-image]").forEach((thumbnail) => {
+    thumbnail.addEventListener("click", () => {
+      modalImage.src = thumbnail.dataset.fullImage;
+      modalImage.className = "fit";
+      modalImage.style.transform = "";
+      rotation = 0;
+      modal.classList.add("open");
+    });
+  });
+  modal.querySelectorAll(".modal-rotate").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      rotation = (rotation + Number(button.dataset.degrees) + 360) % 360;
+      modalImage.style.transform = `rotate(${rotation}deg)`;
+    });
+  });
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal || event.target.classList.contains("modal-close")) closeModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeModal();
+  });
+
   document.querySelectorAll(".tag-picker").forEach((picker) => {
     const input = picker.querySelector(".tag-input");
     const hidden = picker.querySelector(".tag-value");

@@ -7,12 +7,13 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>タグ一覧</span><nav class="site-nav">
   <a href="{{ url_for('webui') }}">検索</a>
   <a href="{{ url_for('webui', untagged='1') }}">未タグ一覧</a>
   <a href="{{ url_for('timeline') }}">時系列</a>
 </nav></div></header>
-<main>
+<main id="main-content">
   <div class="page-heading">
     <div><p class="eyebrow">TAGS</p><h1>タグ一覧</h1></div>
     <a class="button secondary" href="{{ url_for('webui') }}">検索へ戻る</a>

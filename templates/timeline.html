@@ -7,18 +7,22 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="site-header"><div class="shell"><strong>Scan Archive</strong><span>時系列</span><nav class="site-nav">
   <a href="{{ url_for('webui') }}">検索</a>
   <a href="{{ url_for('webui', untagged='1') }}">未タグ一覧</a>
   <a href="{{ url_for('tag_list') }}">タグ一覧</a>
 </nav></div></header>
-<main>
+<main id="main-content">
   <div class="page-heading">
     <div><p class="eyebrow">TIMELINE</p><h1>{{ month.year }}年{{ month.month }}月</h1></div>
     <a class="button secondary" href="{{ url_for('webui') }}">検索へ戻る</a>
   </div>
   <div class="calendar-nav">
-    <a class="button secondary" href="{{ url_for('timeline', month=previous_month) }}">前月</a>
+    <a class="button secondary" href="{{ url_for('timeline', month=previous_month, period=period) }}">前月</a>
+    <label class="month-picker">表示月
+      <input type="month" value="{{ month.strftime('%Y-%m') }}" onchange="location.href='{{ url_for('timeline') }}?month=' + this.value + '&period={{ period }}'">
+    </label>
     <label class="period-picker">表示単位
       <select onchange="location.href=this.value">
         {% for value, label in [("month", "1か月"), ("week", "1週間"), ("day", "1日")] %}
@@ -27,7 +31,7 @@
       </select>
     </label>
     <strong>ファイルがある日: 色付き・件数表示</strong>
-    <a class="button secondary" href="{{ url_for('timeline', month=next_month) }}">次月</a>
+    <a class="button secondary" href="{{ url_for('timeline', month=next_month, period=period) }}">次月</a>
   </div>
   <section class="calendar">
     {% for weekday in ["月", "火", "水", "木", "金", "土", "日"] %}
@@ -65,5 +69,54 @@
   {% else %}<p class="empty">この日に追加されたファイルはありません。</p>{% endif %}
   {% endif %}
 </main>
+<div class="modal" id="image-modal" role="dialog" aria-modal="true" aria-label="サムネイル拡大表示">
+  <div class="modal-rotate-actions">
+    <button class="modal-rotate" data-degrees="-90" type="button" aria-label="画像を左に90度回転">↺</button>
+    <button class="modal-rotate" data-degrees="90" type="button" aria-label="画像を右に90度回転">↻</button>
+  </div>
+  <span class="modal-close" aria-label="閉じる">&times;</span>
+  <img alt="拡大表示">
+</div>
+<script>
+  const modal = document.getElementById("image-modal");
+  const modalImage = modal.querySelector("img");
+  let rotation = 0;
+
+  function closeModal() {
+    modal.classList.remove("open");
+    modalImage.removeAttribute("src");
+    modalImage.className = "";
+    rotation = 0;
+    modalImage.style.transform = "";
+  }
+
+  document.querySelectorAll(".thumb").forEach((thumbnail) => {
+    thumbnail.addEventListener("click", () => {
+      modalImage.src = thumbnail.dataset.fullImage;
+      modalImage.className = "fit";
+      modalImage.style.transform = "";
+      rotation = 0;
+      modal.classList.add("open");
+    });
+  });
+  modal.querySelectorAll(".modal-rotate").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      rotation = (rotation + Number(button.dataset.degrees) + 360) % 360;
+      modalImage.style.transform = `rotate(${rotation}deg)`;
+    });
+  });
+  modalImage.addEventListener("click", (event) => {
+    event.stopPropagation();
+    modalImage.classList.toggle("fit");
+    modalImage.classList.toggle("original");
+  });
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal || event.target.classList.contains("modal-close")) closeModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeModal();
+  });
+</script>
 </body>
 </html>

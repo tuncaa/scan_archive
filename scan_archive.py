@@ -658,7 +658,7 @@ def create_webui():
             connection.close()
 
         selected_date = request.args.get("date", "")
-        period = request.args.get("period", "month")
+        period = request.args.get("period", "week")
         if period not in {"month", "week", "day"}:
             abort(400, description="期間の指定が不正です。")
         documents = []
@@ -670,16 +670,21 @@ def create_webui():
             except ValueError:
                 abort(400, description="日付の形式が不正です。")
             if period == "week":
-                range_start = selected_day - timedelta(
-                    days=selected_day.weekday()
-                )
-                range_end = range_start + timedelta(days=6)
+                range_start = selected_day
+                range_end = selected_day + timedelta(days=6)
             elif period == "month":
-                range_start = selected_day.replace(day=1)
-                range_end = range_start.replace(
-                    day=calendar.monthrange(
-                        range_start.year, range_start.month
-                    )[1]
+                range_start = selected_day
+                next_month = (
+                    range_start.replace(day=28) + timedelta(days=4)
+                ).replace(day=1)
+                target_day = min(
+                    range_start.day,
+                    calendar.monthrange(
+                        next_month.year, next_month.month
+                    )[1],
+                )
+                range_end = next_month.replace(day=target_day) - timedelta(
+                    days=1
                 )
             else:
                 range_start = range_end = selected_day
@@ -699,6 +704,7 @@ def create_webui():
                 }
                 for document in documents
             ]
+            documents.sort(key=lambda document: document["original_modified"])
 
         previous_month = (month_start.replace(day=1) - timedelta(days=1))
         next_month = (
@@ -780,6 +786,8 @@ def create_webui():
             connection.commit()
         finally:
             connection.close()
+        if request.form.get("untagged") == "1":
+            return redirect(url_for("webui", untagged="1"))
         return redirect(url_for("webui"))
 
     @app.post("/documents/bulk-update")
