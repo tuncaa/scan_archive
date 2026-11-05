@@ -15,6 +15,17 @@
 </nav></div></header>
 <main id="main-content">
   <div class="page-heading"><div><p class="eyebrow">ARCHIVE</p><h1>ドキュメント検索</h1></div><p class="result-count">{{ documents|length }}件{% if untagged %}（タグ未設定）{% endif %}</p></div>
+  {% if uploaded %}
+  <p class="notice">{{ uploaded }}件のPDFを追加しました。</p>
+  {% endif %}
+  <form class="upload-form" method="post" action="{{ url_for('upload_documents') }}" enctype="multipart/form-data">
+    <label class="upload-dropzone" for="pdf-files">
+      <strong>PDFを追加</strong>
+      <span>ここにPDFをドラッグ＆ドロップ、またはクリックして選択</span>
+      <input id="pdf-files" name="files" type="file" accept=".pdf,application/pdf" multiple required>
+    </label>
+    <div class="actions"><button type="submit">アップロード</button></div>
+  </form>
   <form class="search" method="get" action="{{ url_for('webui') }}">
     <label for="text-search">テキスト検索（ファイル名・OCR本文・メモ）
       <input id="text-search" name="text" value="{{ filters.text }}" placeholder="ファイル名・OCR本文・メモ">
@@ -76,6 +87,7 @@
           </div>
         </label>
         <div class="actions"><button type="submit">保存</button>
+          <a href="{{ url_for('edit_document', sha256=document.sha256) }}">編集ページ</a>
           <a href="{{ url_for('document_file', sha256=document.sha256, kind='txt') }}">OCR本文</a></div>
       </form>
     </article>
@@ -212,6 +224,26 @@
     picker.closest("form").addEventListener("submit", sync);
     sync();
   });
+
+  const uploadDropzone = document.querySelector(".upload-dropzone");
+  const uploadInput = document.getElementById("pdf-files");
+  if (uploadDropzone && uploadInput) {
+    ["dragenter", "dragover"].forEach((eventName) => {
+      uploadDropzone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        uploadDropzone.classList.add("dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach((eventName) => {
+      uploadDropzone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        uploadDropzone.classList.remove("dragover");
+      });
+    });
+    uploadDropzone.addEventListener("drop", (event) => {
+      uploadInput.files = event.dataTransfer.files;
+    });
+  }
 </script>
 </body>
 </html>

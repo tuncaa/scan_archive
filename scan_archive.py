@@ -10,6 +10,7 @@ import os
 import shutil
 import sqlite3
 import time
+import uuid
 
 from flask import (
     Flask,
@@ -573,6 +574,47 @@ def create_webui():
         finally:
             connection.close()
 
+    @app.post("/upload")
+    def upload_documents():
+        uploaded_files = [
+            uploaded_file
+            for uploaded_file in request.files.getlist("files")
+            if uploaded_file.filename
+        ]
+        if not uploaded_files:
+            abort(400, description="PDFファイルを1件以上選択してください。")
+        if any(
+            Path(uploaded_file.filename).suffix.lower() != ".pdf"
+            for uploaded_file in uploaded_files
+        ):
+            abort(400, description="PDFファイルのみ追加できます。")
+
+        uploaded_at = time.time()
+        imported_count = 0
+        with single_instance():
+            connection = open_database()
+            try:
+                for uploaded_file in uploaded_files:
+                    upload_path = WORK / f"upload-{uuid.uuid4().hex}.pdf"
+                    try:
+                        uploaded_file.save(str(upload_path))
+                        os.utime(upload_path, (uploaded_at, uploaded_at))
+                        import_pdf(
+                            connection,
+                            upload_path,
+                            fingerprint(upload_path),
+                        )
+                        imported_count += 1
+                    finally:
+                        upload_path.unlink(missing_ok=True)
+
+                process_thumbnails(connection)
+                process_ocr(connection)
+            finally:
+                connection.close()
+
+        return redirect(url_for("webui", uploaded=imported_count))
+
     @app.get("/")
     def webui():
         filters = {
@@ -585,6 +627,7 @@ def create_webui():
             for tag in request.args.getlist("selected_tag")
             if tag.strip()
         ]
+        uploaded = request.args.get("uploaded", "")
         bulk_tag = request.args.get("bulk_tag", "").strip()
         if bulk_tag:
             selected_tags.extend(
@@ -623,6 +666,7 @@ def create_webui():
             bulk_tag=",".join(selected_tags),
             selected_tags=selected_tags,
             priority_tags=priority_tags,
+            uploaded=uploaded,
         )
 
     @app.get("/timeline")
