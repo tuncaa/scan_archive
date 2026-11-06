@@ -17,7 +17,7 @@ if not exist "%SCRIPT%" (
 )
 
 echo Processing scan folder...
-"%PYTHON%" "%SCRIPT%"
+"%PYTHON%" "%SCRIPT%" --config "%~dp0config.json"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (

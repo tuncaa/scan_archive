@@ -18,6 +18,12 @@
   {% if uploaded %}
   <p class="notice">{{ uploaded }}件のPDFを追加しました。</p>
   {% endif %}
+  {% if imported %}
+  <p class="notice">{{ imported }}件を設定済みフォルダから取り込みました。</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('import_source') }}">
+    <div class="actions"><button type="submit">設定済みフォルダから取り込む</button></div>
+  </form>
   <form class="upload-form" method="post" action="{{ url_for('upload_documents') }}" enctype="multipart/form-data">
     <label class="upload-dropzone" for="pdf-files">
       <strong>PDFを追加</strong>
@@ -77,6 +83,7 @@
       <p class="tags">タグ: {{ document.tag_names or 'なし' }}</p>
       <form method="post" action="{{ url_for('update_document', sha256=document.sha256) }}">
         {% if untagged %}<input type="hidden" name="untagged" value="1">{% endif %}
+        <label>整理日時<input type="datetime-local" name="original_modified" value="{{ document.modified_input }}"></label>
         <label>メモ<textarea name="note">{{ document.note or '' }}</textarea></label>
         <label>タグ（複数はカンマ・改行・空白区切り）
           <div class="tag-picker" data-priority-tags='{{ priority_tags | tojson }}' data-value="{{ document.tag_names or '' }}">
