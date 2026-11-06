@@ -2,3 +2,4 @@
 /__pycache__
 /tessdata/*.traineddata
 /config.json
+config.json
