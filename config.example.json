@@ -7,5 +7,6 @@
   "thumbnail_dpi": 150,
   "ocr_pages": 1,
   "stable_seconds": 10,
-  "min_text_chars": 10
+  "min_text_chars": 10,
+  "flask_debug": false
 }

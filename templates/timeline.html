@@ -63,6 +63,9 @@
       <p class="document-note">{{ document.note or 'メモなし' }}</p>
       <p class="tags">タグ: {{ document.tag_names or 'なし' }}</p>
       <a class="button secondary" href="{{ url_for('edit_document', sha256=document.sha256) }}">内容を編集</a>
+      <form method="post" action="{{ url_for('delete_document', sha256=document.sha256) }}" onsubmit="return confirm('このデータを削除済みにしますか？PDF本体は削除されません。');">
+        <div class="actions"><button class="danger" type="submit">削除済みにする</button></div>
+      </form>
     </article>
     {% endfor %}
   </section>

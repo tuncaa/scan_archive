@@ -38,6 +38,7 @@ THUMBNAIL_DPI = 150
 OCR_PAGES = 1
 STABLE_SECONDS = 10
 MIN_TEXT_CHARS = 10
+FLASK_DEBUG = False
 
 SYSTEM = DEST / "_system"
 WORK = DEST / "_work"
@@ -46,7 +47,8 @@ DATABASE = SYSTEM / "index.sqlite"
 
 def load_config(path=CONFIG_PATH):
     global SOURCE, DEST, TESSDATA, LANGUAGE, DPI, THUMBNAIL_DPI
-    global OCR_PAGES, STABLE_SECONDS, MIN_TEXT_CHARS, SYSTEM, WORK, DATABASE
+    global OCR_PAGES, STABLE_SECONDS, MIN_TEXT_CHARS, FLASK_DEBUG
+    global SYSTEM, WORK, DATABASE
     config_path = Path(path)
     if not config_path.is_file():
         raise FileNotFoundError(
@@ -76,6 +78,7 @@ def load_config(path=CONFIG_PATH):
     OCR_PAGES = int(values.get("ocr_pages", OCR_PAGES))
     STABLE_SECONDS = int(values.get("stable_seconds", STABLE_SECONDS))
     MIN_TEXT_CHARS = int(values.get("min_text_chars", MIN_TEXT_CHARS))
+    FLASK_DEBUG = bool(values.get("flask_debug", FLASK_DEBUG))
     SYSTEM = DEST / "_system"
     WORK = DEST / "_work"
     DATABASE = SYSTEM / "index.sqlite"
@@ -93,6 +96,21 @@ def timestamp_iso(seconds):
 
 def normalize_ocr_text(text):
     return text.replace(" ", "").replace("\u3000", "")
+
+
+def extract_page_text(page):
+    """埋め込みテキストを優先し、取得できないページだけOCRする。"""
+    embedded_text = page.get_text("text", sort=True).strip()
+    if any(not char.isspace() for char in embedded_text):
+        return embedded_text, "埋め込みテキスト"
+
+    text_page = page.get_textpage_ocr(
+        language=LANGUAGE,
+        dpi=DPI,
+        full=True,
+        tessdata=str(TESSDATA),
+    )
+    return page.get_text("text", textpage=text_page, sort=True).strip(), "OCR"
 
 
 def fingerprint(path):
@@ -157,7 +175,8 @@ def open_database():
             error TEXT,
             processed_at TEXT,
             thumbnail_path TEXT,
-            note TEXT NOT NULL DEFAULT ''
+            note TEXT NOT NULL DEFAULT '',
+            is_deleted INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS source_files (
@@ -194,6 +213,11 @@ def open_database():
     if "note" not in columns:
         connection.execute(
             "ALTER TABLE documents ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+        )
+    if "is_deleted" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN is_deleted "
+            "INTEGER NOT NULL DEFAULT 0"
         )
 
     tag_columns = {
@@ -378,6 +402,7 @@ def process_thumbnails(connection):
     rows = connection.execute("""
         SELECT sha256, pdf_path, thumbnail_path
         FROM documents
+        WHERE is_deleted = 0
     """).fetchall()
 
     for row in rows:
@@ -403,7 +428,7 @@ def process_thumbnails(connection):
 def process_ocr(connection):
     rows = connection.execute("""
         SELECT * FROM documents
-        WHERE status IN ('pending', 'error')
+        WHERE status IN ('pending', 'error') AND is_deleted = 0
         ORDER BY original_modified
     """).fetchall()
 
@@ -430,22 +455,26 @@ def process_ocr(connection):
                     else min(OCR_PAGES, document.page_count)
                 )
                 page_bodies = []
+                extraction_methods = []
                 for page_number in range(page_count):
                     page = document[page_number]
-                    text_page = page.get_textpage_ocr(
-                        language=LANGUAGE,
-                        dpi=DPI,
-                        full=True,
-                        tessdata=str(TESSDATA),
-                    )
-                    page_body = page.get_text(
-                        "text", textpage=text_page, sort=True
-                    ).strip()
+                    page_body, extraction_method = extract_page_text(page)
                     page_bodies.append(normalize_ocr_text(page_body))
+                    extraction_methods.append(extraction_method)
                 body = "\n\n".join(page_bodies)
                 target_description = (
                     "全ページ" if OCR_PAGES == -1
                     else f"先頭{page_count}ページ"
+                )
+                extraction_method = (
+                    "埋め込みテキスト"
+                    if all(
+                        method == "埋め込みテキスト"
+                        for method in extraction_methods
+                    )
+                    else "OCR"
+                    if all(method == "OCR" for method in extraction_methods)
+                    else "埋め込みテキスト＋OCR"
                 )
 
             count = sum(not char.isspace() for char in body)
@@ -463,9 +492,10 @@ def process_ocr(connection):
                 f"保存PDF: {row['pdf_path']}\n"
                 f"サムネイル: {thumbnail_path}\n"
                 f"対象: {target_description}\n"
+                f"取得方法: {extraction_method}\n"
                 f"OCR言語: {LANGUAGE}\n"
                 f"状態: {status}\n\n"
-                f"--- OCR本文 ---\n{body}\n"
+                f"--- 本文 ---\n{body}\n"
             )
 
             temporary = WORK / f"{row['sha256']}.txt.part"
@@ -538,9 +568,12 @@ def search_documents(connection, keyword):
     rows = connection.execute("""
         SELECT original_modified, pdf_path, status, body
         FROM documents
-        WHERE replace(replace(body, ' ', ''), '　', '')
+        WHERE is_deleted = 0
+          AND (
+              replace(replace(body, ' ', ''), '　', '')
                   LIKE ? ESCAPE '\\'
            OR original_path LIKE ? ESCAPE '\\'
+          )
         ORDER BY original_modified DESC
     """, (body_pattern, path_pattern)).fetchall()
 
@@ -570,6 +603,7 @@ def create_webui(config_path=CONFIG_PATH):
         try:
             conditions = []
             parameters = []
+            conditions.append("d.is_deleted = 0")
             if filters["text"]:
                 conditions.append("""
                     (
@@ -674,7 +708,7 @@ def create_webui(config_path=CONFIG_PATH):
 
         return redirect(url_for("webui", uploaded=imported_count))
 
-    @app.post("/import-source")
+    @app.route("/import-source", methods=("GET", "POST"))
     def import_source():
         with single_instance():
             connection = open_database()
@@ -768,7 +802,8 @@ def create_webui(config_path=CONFIG_PATH):
                 for row in connection.execute("""
                     SELECT date(original_modified) AS day, COUNT(*) AS count
                     FROM documents
-                    WHERE date(original_modified) BETWEEN date(?) AND date(?)
+                    WHERE is_deleted = 0
+                      AND date(original_modified) BETWEEN date(?) AND date(?)
                     GROUP BY date(original_modified)
                 """, (calendar_start.isoformat(), calendar_end.isoformat()))
             }
@@ -852,7 +887,7 @@ def create_webui(config_path=CONFIG_PATH):
                 FROM documents d
                 LEFT JOIN document_tags dt ON dt.sha256 = d.sha256
                 LEFT JOIN tags t ON t.id = dt.tag_id
-                WHERE d.sha256 = ?
+                WHERE d.sha256 = ? AND d.is_deleted = 0
                 GROUP BY d.sha256
             """, (sha256,)).fetchone()
             priority_tags = [
@@ -877,6 +912,22 @@ def create_webui(config_path=CONFIG_PATH):
             priority_tags=priority_tags,
         )
 
+    @app.post("/documents/<sha256>/delete")
+    def delete_document(sha256):
+        connection = open_database()
+        try:
+            cursor = connection.execute(
+                "UPDATE documents SET is_deleted = 1 "
+                "WHERE sha256 = ? AND is_deleted = 0",
+                (sha256,),
+            )
+            if cursor.rowcount == 0:
+                abort(404)
+            connection.commit()
+        finally:
+            connection.close()
+        return redirect(url_for("webui"))
+
     @app.post("/documents/<sha256>/update")
     def update_document(sha256):
         note = request.form.get("note", "").strip()
@@ -895,7 +946,8 @@ def create_webui(config_path=CONFIG_PATH):
         connection = open_database()
         try:
             if not connection.execute(
-                "SELECT 1 FROM documents WHERE sha256 = ?", (sha256,)
+                "SELECT 1 FROM documents "
+                "WHERE sha256 = ? AND is_deleted = 0", (sha256,)
             ).fetchone():
                 abort(404)
             connection.execute(
@@ -946,7 +998,8 @@ def create_webui(config_path=CONFIG_PATH):
             existing = {
                 row["sha256"]
                 for row in connection.execute(
-                    f"SELECT sha256 FROM documents WHERE sha256 IN ({placeholders})",
+                    f"SELECT sha256 FROM documents "
+                    f"WHERE is_deleted = 0 AND sha256 IN ({placeholders})",
                     sha256s,
                 )
             }
@@ -996,7 +1049,10 @@ def create_webui(config_path=CONFIG_PATH):
                        COUNT(dt.sha256) AS document_count
                 FROM tags t
                 LEFT JOIN document_tags dt ON dt.tag_id = t.id
+                LEFT JOIN documents d
+                    ON d.sha256 = dt.sha256 AND d.is_deleted = 0
                 WHERE t.is_hidden = 0
+                  AND d.sha256 IS NOT NULL
                 GROUP BY t.id, t.name
                 ORDER BY t.name COLLATE NOCASE
             """).fetchall()
@@ -1043,7 +1099,8 @@ def create_webui(config_path=CONFIG_PATH):
         try:
             row = connection.execute(
                 "SELECT pdf_path, thumbnail_path, txt_path "
-                "FROM documents WHERE sha256 = ?", (sha256,)
+                "FROM documents WHERE sha256 = ? AND is_deleted = 0",
+                (sha256,),
             ).fetchone()
         finally:
             connection.close()
@@ -1063,7 +1120,11 @@ def create_webui(config_path=CONFIG_PATH):
 
 
 def run_webui(host, port, config_path):
-    create_webui(config_path).run(host=host, port=port, debug=False)
+    create_webui(config_path).run(
+        host=host,
+        port=port,
+        debug=FLASK_DEBUG,
+    )
 
 
 def main():
@@ -1125,6 +1186,7 @@ def main():
             counts = connection.execute("""
                 SELECT status, COUNT(*) AS count
                 FROM documents
+                WHERE is_deleted = 0
                 GROUP BY status
             """).fetchall()
 
