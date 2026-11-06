@@ -151,6 +151,8 @@ C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_ar
 - サムネイルをクリックすると画面内に収まるサイズで拡大表示でき、拡大画像をクリックすると原寸大に切り替えられる。
 - PDF、OCR本文、1ページ目サムネイルをWeb UIから開ける。
 - 初期ページのアップロード欄からPDFを複数選択、またはドラッグ＆ドロップで追加できる。追加時刻を整理用日時として取り込み、サムネイル作成とOCRを実行する。
+- 初期ページの「設定済みフォルダから取り込む」ボタンで、`config.json`の`source`にあるPDFを取り込める。
+- 個別編集ページと一覧の編集欄で、整理用日時を変更できる。
 - 初期ページの各ファイルに個別編集ページへのリンクを表示する。
 - Web UIのHTMLテンプレートは、スクリプト同一フォルダの`templates\index.html`に分離している。
 - Web UIのスタイルは、スクリプト同一フォルダの`static\styles.css`に分離している。
@@ -158,9 +160,9 @@ C:\pytmp\pdf2ocrandfold\.venv\Scripts\python.exe C:\pytmp\pdf2ocrandfold\scan_ar
 
 ## 設定が必要な項目
 
-- コピー元フォルダ：ユーザーの実際の場所は未確認。提示済みコードでは `C:\scanner_output` を仮設定。
-- 保存先フォルダ：`C:\scan`。
-- Tesseract言語データの場所：スクリプトと同じフォルダの `tessdata`（`jpn.traineddata` と `eng.traineddata`）を初期値とする。
+- `config.example.json`を`config.json`へコピーし、コピー元・保存先などを設定する。
+- コピー元フォルダと保存先フォルダは`config.json`の`source`・`destination`で指定する。
+- Tesseract言語データの場所は`config.json`の`tessdata`で指定する。
 - スクリプトを保存する場所、使用するPythonのパス。
 - タスク スケジューラの実行間隔：5分間隔などを候補として提案済み。確定していない。
 

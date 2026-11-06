@@ -27,6 +27,7 @@
     <div class="meta">{{ document.original_modified }} / {{ document.status }}</div>
     <form method="post" action="{{ url_for('update_document', sha256=document.sha256) }}">
       {% if request.args.get('untagged') == '1' %}<input type="hidden" name="untagged" value="1">{% endif %}
+      <label>整理日時<input type="datetime-local" name="original_modified" value="{{ document.modified_input }}"></label>
       <label>メモ<textarea name="note">{{ document.note or '' }}</textarea></label>
       <label>タグ
         <div class="tag-picker" data-priority-tags='{{ priority_tags | tojson }}' data-value="{{ document.tag_names or '' }}">

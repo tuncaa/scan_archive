@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import argparse
 import calendar
 import hashlib
+import json
 import logging
 import msvcrt
 import os
@@ -24,23 +25,60 @@ from flask import (
 import pymupdf
 
 
-# ---------- 設定：実際の環境に合わせて変更 ----------
-SOURCE = Path(r"C:\tmp\scan-tmp\moto")  # スキャナーの保存先
-DEST = Path(r"C:\tmp\scan-tmp\saki")              # PDF・TXTの保管先
-
+CONFIG_PATH = Path(os.environ.get(
+    "SCAN_ARCHIVE_CONFIG",
+    Path(__file__).resolve().with_name("config.json"),
+))
+SOURCE = Path("source")
+DEST = Path("archive")
 TESSDATA = Path(__file__).resolve().parent / "tessdata"
 LANGUAGE = "jpn+eng"
 DPI = 300
 THUMBNAIL_DPI = 150
-OCR_PAGES = 1  # 先頭からOCRするページ数。-1で全ページ
-
-STABLE_SECONDS = 10   # 一覧取得後、この秒数待ってサイズ・日時を再確認
-MIN_TEXT_CHARS = 10   # これ未満なら「要確認」として保存
-# -------------------------------------------------
+OCR_PAGES = 1
+STABLE_SECONDS = 10
+MIN_TEXT_CHARS = 10
 
 SYSTEM = DEST / "_system"
 WORK = DEST / "_work"
 DATABASE = SYSTEM / "index.sqlite"
+
+
+def load_config(path=CONFIG_PATH):
+    global SOURCE, DEST, TESSDATA, LANGUAGE, DPI, THUMBNAIL_DPI
+    global OCR_PAGES, STABLE_SECONDS, MIN_TEXT_CHARS, SYSTEM, WORK, DATABASE
+    config_path = Path(path)
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"設定ファイルがありません: {config_path} "
+            "(config.example.jsonをコピーして作成してください)"
+        )
+    try:
+        values = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"設定ファイルのJSONが不正です: {config_path}") from exc
+
+    required = ("source", "destination")
+    missing = [key for key in required if not values.get(key)]
+    if missing:
+        raise ValueError(f"設定項目がありません: {', '.join(missing)}")
+    SOURCE = Path(values["source"]).expanduser()
+    DEST = Path(values["destination"]).expanduser()
+    tessdata = Path(values.get(
+        "tessdata", Path(__file__).resolve().parent / "tessdata"
+    )).expanduser()
+    if not tessdata.is_absolute():
+        tessdata = config_path.parent / tessdata
+    TESSDATA = tessdata.resolve()
+    LANGUAGE = str(values.get("language", LANGUAGE))
+    DPI = int(values.get("dpi", DPI))
+    THUMBNAIL_DPI = int(values.get("thumbnail_dpi", THUMBNAIL_DPI))
+    OCR_PAGES = int(values.get("ocr_pages", OCR_PAGES))
+    STABLE_SECONDS = int(values.get("stable_seconds", STABLE_SECONDS))
+    MIN_TEXT_CHARS = int(values.get("min_text_chars", MIN_TEXT_CHARS))
+    SYSTEM = DEST / "_system"
+    WORK = DEST / "_work"
+    DATABASE = SYSTEM / "index.sqlite"
 
 
 def now_iso():
@@ -463,6 +501,24 @@ def process_ocr(connection):
             logging.exception("OCR失敗: %s", row["pdf_path"])
 
 
+def import_source_folder(connection):
+    if not SOURCE.is_dir():
+        raise FileNotFoundError(f"コピー元フォルダがありません: {SOURCE}")
+    candidates = collect_candidates()
+    if candidates:
+        time.sleep(STABLE_SECONDS)
+    imported = 0
+    for source, expected in candidates:
+        try:
+            import_pdf(connection, source, expected)
+            imported += 1
+        except Exception:
+            logging.exception("取り込み失敗: %s", source)
+    process_thumbnails(connection)
+    process_ocr(connection)
+    return imported
+
+
 def search_documents(connection, keyword):
     # %や_をワイルドカードと解釈せず、文字列として検索
     escaped_path = (
@@ -503,7 +559,10 @@ def search_documents(connection, keyword):
         print(f"抜粋: {excerpt}")
 
 
-def create_webui():
+def create_webui(config_path=CONFIG_PATH):
+    load_config(config_path)
+    SYSTEM.mkdir(parents=True, exist_ok=True)
+    WORK.mkdir(parents=True, exist_ok=True)
     app = Flask(__name__)
 
     def query_documents(filters, untagged, limit=None):
@@ -615,6 +674,16 @@ def create_webui():
 
         return redirect(url_for("webui", uploaded=imported_count))
 
+    @app.post("/import-source")
+    def import_source():
+        with single_instance():
+            connection = open_database()
+            try:
+                imported_count = import_source_folder(connection)
+            finally:
+                connection.close()
+        return redirect(url_for("webui", imported=imported_count))
+
     @app.get("/")
     def webui():
         filters = {
@@ -628,6 +697,7 @@ def create_webui():
             if tag.strip()
         ]
         uploaded = request.args.get("uploaded", "")
+        imported = request.args.get("imported", "")
         bulk_tag = request.args.get("bulk_tag", "").strip()
         if bulk_tag:
             selected_tags.extend(
@@ -652,6 +722,9 @@ def create_webui():
             {
                 **{column: document[column] for column in document.keys()},
                 "filename": Path(document["filename_path"]).name,
+                "modified_input": datetime.fromisoformat(
+                    document["original_modified"]
+                ).astimezone().strftime("%Y-%m-%dT%H:%M"),
                 "display_filename": "_".join(
                     Path(document["filename_path"]).stem.split("_")[:2]
                 ),
@@ -667,6 +740,7 @@ def create_webui():
             selected_tags=selected_tags,
             priority_tags=priority_tags,
             uploaded=uploaded,
+            imported=imported,
         )
 
     @app.get("/timeline")
@@ -742,6 +816,9 @@ def create_webui():
                 {
                     **{column: document[column] for column in document.keys()},
                     "filename": Path(document["filename_path"]).name,
+                    "modified_input": datetime.fromisoformat(
+                        document["original_modified"]
+                    ).astimezone().strftime("%Y-%m-%dT%H:%M"),
                     "display_filename": "_".join(
                         Path(document["filename_path"]).stem.split("_")[:2]
                     ),
@@ -791,13 +868,25 @@ def create_webui():
             abort(404)
         return render_template(
             "edit_document.html",
-            document=document,
+            document={
+                **{column: document[column] for column in document.keys()},
+                "modified_input": datetime.fromisoformat(
+                    document["original_modified"]
+                ).astimezone().strftime("%Y-%m-%dT%H:%M"),
+            },
             priority_tags=priority_tags,
         )
 
     @app.post("/documents/<sha256>/update")
     def update_document(sha256):
         note = request.form.get("note", "").strip()
+        raw_modified = request.form.get("original_modified", "").strip()
+        if not raw_modified:
+            abort(400, description="整理日時を指定してください。")
+        try:
+            modified = datetime.fromisoformat(raw_modified).astimezone()
+        except ValueError:
+            abort(400, description="整理日時の形式が不正です。")
         raw_tags = request.form.get("tags", "")
         tag_names = {
             tag.strip() for tag in raw_tags.replace(",", " ").split()
@@ -810,8 +899,9 @@ def create_webui():
             ).fetchone():
                 abort(404)
             connection.execute(
-                "UPDATE documents SET note = ? WHERE sha256 = ?",
-                (note, sha256),
+                "UPDATE documents SET note = ?, original_modified = ? "
+                "WHERE sha256 = ?",
+                (note, modified.isoformat(timespec="seconds"), sha256),
             )
             connection.execute(
                 "DELETE FROM document_tags WHERE sha256 = ?", (sha256,)
@@ -972,8 +1062,8 @@ def create_webui():
     return app
 
 
-def run_webui(host, port):
-    create_webui().run(host=host, port=port, debug=False)
+def run_webui(host, port, config_path):
+    create_webui(config_path).run(host=host, port=port, debug=False)
 
 
 def main():
@@ -982,8 +1072,10 @@ def main():
     parser.add_argument("--webui", action="store_true")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH)
     args = parser.parse_args()
 
+    load_config(args.config)
     SYSTEM.mkdir(parents=True, exist_ok=True)
     WORK.mkdir(parents=True, exist_ok=True)
 
@@ -999,7 +1091,7 @@ def main():
     )
 
     if args.webui:
-        run_webui(args.host, args.port)
+        run_webui(args.host, args.port, args.config)
         return
 
     with single_instance():
@@ -1024,24 +1116,11 @@ def main():
                 raise ValueError("コピー元と保存先は分けてください。")
 
             if SOURCE.is_dir():
-                candidates = collect_candidates()
-                if candidates:
-                    time.sleep(STABLE_SECONDS)
-
-                for source, expected in candidates:
-                    try:
-                        import_pdf(connection, source, expected)
-                    except Exception:
-                        logging.exception("取り込み失敗: %s", source)
+                import_source_folder(connection)
             else:
-                logging.warning(
-                    "コピー元がありません。保存済みPDFのOCRのみ実行: %s",
-                    SOURCE,
-                )
-
-            # コピー元が消えていても、保存済みの未完了PDFは処理する
-            process_thumbnails(connection)
-            process_ocr(connection)
+                logging.warning("コピー元がありません: %s", SOURCE)
+                process_thumbnails(connection)
+                process_ocr(connection)
 
             counts = connection.execute("""
                 SELECT status, COUNT(*) AS count

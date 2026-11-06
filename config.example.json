@@ -1,0 +1,11 @@
+{
+  "source": "C:/scanner_output",
+  "destination": "C:/scan",
+  "tessdata": "./tessdata",
+  "language": "jpn+eng",
+  "dpi": 300,
+  "thumbnail_dpi": 150,
+  "ocr_pages": 1,
+  "stable_seconds": 10,
+  "min_text_chars": 10
+}
