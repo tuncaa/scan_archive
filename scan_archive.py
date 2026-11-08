@@ -343,8 +343,6 @@ def import_pdf(connection, source, expected):
         finally:
             temporary.unlink(missing_ok=True)
 
-    create_thumbnail(pdf_path, thumbnail_path)
-
     if not existing:
         # Python 3.12以降ではWindowsの作成日時にst_birthtimeを使用
         created = getattr(stat, "st_birthtime", stat.st_ctime)
