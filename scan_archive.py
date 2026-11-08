@@ -175,6 +175,9 @@ def open_database():
             error TEXT,
             processed_at TEXT,
             thumbnail_path TEXT,
+            thumbnail_status TEXT NOT NULL DEFAULT 'pending',
+            thumbnail_error TEXT,
+            thumbnail_processed_at TEXT,
             note TEXT NOT NULL DEFAULT '',
             is_deleted INTEGER NOT NULL DEFAULT 0
         );
@@ -209,6 +212,19 @@ def open_database():
     if "thumbnail_path" not in columns:
         connection.execute(
             "ALTER TABLE documents ADD COLUMN thumbnail_path TEXT"
+        )
+    if "thumbnail_status" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN thumbnail_status "
+            "TEXT NOT NULL DEFAULT 'pending'"
+        )
+    if "thumbnail_error" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN thumbnail_error TEXT"
+        )
+    if "thumbnail_processed_at" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN thumbnail_processed_at TEXT"
         )
     if "note" not in columns:
         connection.execute(
@@ -343,8 +359,6 @@ def import_pdf(connection, source, expected):
         finally:
             temporary.unlink(missing_ok=True)
 
-    create_thumbnail(pdf_path, thumbnail_path)
-
     if not existing:
         # Python 3.12以降ではWindowsの作成日時にst_birthtimeを使用
         created = getattr(stat, "st_birthtime", stat.st_ctime)
@@ -353,8 +367,9 @@ def import_pdf(connection, source, expected):
             INSERT INTO documents (
                 sha256, pdf_path, txt_path, original_path,
                 original_created, original_modified, imported_at,
-                thumbnail_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                thumbnail_path, thumbnail_status, thumbnail_error,
+                thumbnail_processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)
         """, (
             digest,
             str(pdf_path),
@@ -366,9 +381,15 @@ def import_pdf(connection, source, expected):
             str(thumbnail_path),
         ))
 
-    elif not txt_path.exists() or existing["thumbnail_path"] != str(
-        thumbnail_path
+    elif (
+        not txt_path.exists()
+        or existing["thumbnail_path"] != str(thumbnail_path)
+        or not thumbnail_path.exists()
     ):
+        needs_thumbnail_retry = (
+            existing["thumbnail_path"] != str(thumbnail_path)
+            or not thumbnail_path.exists()
+        )
         connection.execute("""
             UPDATE documents
             SET status = CASE
@@ -379,11 +400,26 @@ def import_pdf(connection, source, expected):
                     WHEN ? THEN NULL
                     ELSE error
                 END,
+                thumbnail_status = CASE
+                    WHEN ? THEN 'pending'
+                    ELSE thumbnail_status
+                END,
+                thumbnail_error = CASE
+                    WHEN ? THEN NULL
+                    ELSE thumbnail_error
+                END,
+                thumbnail_processed_at = CASE
+                    WHEN ? THEN NULL
+                    ELSE thumbnail_processed_at
+                END,
                 thumbnail_path = ?
             WHERE sha256 = ?
         """, (
             not txt_path.exists(),
             not txt_path.exists(),
+            needs_thumbnail_retry,
+            needs_thumbnail_retry,
+            needs_thumbnail_retry,
             str(thumbnail_path),
             digest,
         ))
@@ -400,7 +436,7 @@ def import_pdf(connection, source, expected):
 
 def process_thumbnails(connection):
     rows = connection.execute("""
-        SELECT sha256, pdf_path, thumbnail_path
+        SELECT sha256, pdf_path, thumbnail_path, thumbnail_status
         FROM documents
         WHERE is_deleted = 0
     """).fetchall()
@@ -412,16 +448,33 @@ def process_thumbnails(connection):
             if row["thumbnail_path"]
             else thumbnail_path_for(pdf_path)
         )
+        processed_at = now_iso()
         try:
             create_thumbnail(pdf_path, thumbnail_path)
-            if row["thumbnail_path"] != str(thumbnail_path):
-                connection.execute("""
-                    UPDATE documents
-                    SET thumbnail_path = ?
-                    WHERE sha256 = ?
-                """, (str(thumbnail_path), row["sha256"]))
-                connection.commit()
-        except Exception:
+            connection.execute("""
+                UPDATE documents
+                SET thumbnail_path = ?,
+                    thumbnail_status = 'done',
+                    thumbnail_error = NULL,
+                    thumbnail_processed_at = ?
+                WHERE sha256 = ?
+            """, (str(thumbnail_path), processed_at, row["sha256"]))
+            connection.commit()
+        except Exception as exc:
+            connection.execute("""
+                UPDATE documents
+                SET thumbnail_path = ?,
+                    thumbnail_status = 'error',
+                    thumbnail_error = ?,
+                    thumbnail_processed_at = ?
+                WHERE sha256 = ?
+            """, (
+                str(thumbnail_path),
+                str(exc),
+                processed_at,
+                row["sha256"],
+            ))
+            connection.commit()
             logging.exception("サムネイル失敗: %s", pdf_path)
 
 
@@ -441,7 +494,6 @@ def process_ocr(connection):
                 if row["thumbnail_path"]
                 else thumbnail_path_for(pdf_path)
             )
-            create_thumbnail(pdf_path, thumbnail_path)
 
             with pymupdf.open(pdf_path) as document:
                 if document.needs_pass:
