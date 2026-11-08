@@ -98,6 +98,12 @@ def normalize_ocr_text(text):
     return text.replace(" ", "").replace("\u3000", "")
 
 
+def original_filename_from_path(path_text):
+    if not path_text:
+        return ""
+    return Path(path_text.replace("\\", "/")).name
+
+
 def extract_page_text(page):
     """埋め込みテキストを優先し、取得できないページだけOCRする。"""
     embedded_text = page.get_text("text", sort=True).strip()
@@ -219,6 +225,39 @@ def open_database():
             "ALTER TABLE documents ADD COLUMN is_deleted "
             "INTEGER NOT NULL DEFAULT 0"
         )
+    if "original_filename" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN original_filename "
+            "TEXT NOT NULL DEFAULT ''"
+        )
+    if "import_method" not in columns:
+        connection.execute(
+            "ALTER TABLE documents ADD COLUMN import_method "
+            "TEXT NOT NULL DEFAULT 'folder'"
+        )
+
+    rows = connection.execute("""
+        SELECT sha256, original_path, original_filename, import_method
+        FROM documents
+    """).fetchall()
+    for row in rows:
+        updates = []
+        values = []
+        if not row["original_filename"]:
+            updates.append("original_filename = ?")
+            values.append(
+                original_filename_from_path(row["original_path"])
+            )
+        if not row["import_method"]:
+            updates.append("import_method = ?")
+            values.append("folder")
+        if updates:
+            values.append(row["sha256"])
+            connection.execute(f"""
+                UPDATE documents
+                SET {", ".join(updates)}
+                WHERE sha256 = ?
+            """, values)
 
     tag_columns = {
         row["name"]
